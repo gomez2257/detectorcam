@@ -168,12 +168,31 @@ updateDiagnostics();
 
 async function initAi() {
   setStatus("Cargando IA", "idle");
-  aiStatusText = "IA cargando";
+  aiStatusText = "Preparando IA";
   aiErrorText = "";
   motionStats.textContent = "IA cargando... puedes abrir la camara";
   updateDiagnostics();
 
   const loadErrors = [];
+
+  function updateAiLoadState(extra = "") {
+    const loaded = [
+      poseLandmarker ? "cuerpo" : null,
+      handLandmarker ? "manos" : null,
+      faceLandmarker ? "cara" : null,
+      objectDetector ? "objetos" : null,
+    ].filter(Boolean);
+
+    visionReady = loaded.length > 0;
+    aiStatusText = loaded.length ? `IA lista: ${loaded.join(" + ")}` : "IA cargando";
+    if (extra && loaded.length) aiStatusText += ` | ${extra}`;
+    if (extra && !loaded.length) aiStatusText = extra;
+    aiErrorText = loadErrors.length ? loadErrors.slice(-2).join(" | ") : "";
+
+    if (!stream) motionStats.textContent = `${aiStatusText} | abre la camara`;
+    if (!isRecording) setStatus(stream ? (visionReady ? "Camara activa" : "Sin IA") : (visionReady ? "IA lista" : "Cargando IA"), "idle");
+    updateDiagnostics();
+  }
 
   async function loadModel(label, factory, gpuOptions) {
     try {
@@ -215,6 +234,7 @@ async function initAi() {
         minTrackingConfidence: 0.25,
       }
     );
+    updateAiLoadState(poseLandmarker ? "cargando manos/cara/objetos" : "cargando modelos restantes");
 
     handLandmarker = await loadModel(
       "Manos",
@@ -228,6 +248,7 @@ async function initAi() {
         minTrackingConfidence: 0.25,
       }
     );
+    updateAiLoadState("cargando cara/objetos");
 
     faceLandmarker = await loadModel(
       "Cara",
@@ -241,6 +262,7 @@ async function initAi() {
         minTrackingConfidence: 0.25,
       }
     );
+    updateAiLoadState("cargando objetos");
 
     objectDetector = await loadModel(
       "Objetos",
@@ -253,24 +275,14 @@ async function initAi() {
       }
     );
 
-    visionReady = Boolean(poseLandmarker || handLandmarker || faceLandmarker || objectDetector);
-    const loaded = [
-      poseLandmarker ? "cuerpo" : null,
-      handLandmarker ? "manos" : null,
-      faceLandmarker ? "cara" : null,
-      objectDetector ? "objetos" : null,
-    ].filter(Boolean);
+    updateAiLoadState();
 
-    if (visionReady) {
-      aiStatusText = `IA lista: ${loaded.join(" + ")}`;
-      aiErrorText = loadErrors.length ? loadErrors.slice(-2).join(" | ") : "";
-      setStatus("IA lista", "idle");
-      motionStats.textContent = `${aiStatusText} | abre la camara`;
-    } else {
+    if (!visionReady) {
       aiStatusText = "IA sin modelos";
       aiErrorText = loadErrors.slice(-3).join(" | ");
       setStatus("IA no cargo", "idle");
       motionStats.textContent = "IA sin modelos. La camara puede grabar sin esqueleto.";
+      updateDiagnostics();
     }
   } catch (error) {
     console.error(error);
@@ -279,9 +291,9 @@ async function initAi() {
     aiErrorText = error?.message || String(error);
     setStatus("IA no cargo", "idle");
     motionStats.textContent = `IA error: ${aiErrorText}`;
+    updateDiagnostics();
   }
 }
-
 async function startCamera() {
   stopCamera();
 
