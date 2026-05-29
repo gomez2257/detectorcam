@@ -1,3 +1,10 @@
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  HandLandmarker,
+  PoseLandmarker,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
 const statusLabel = document.querySelector("#status");
@@ -7,10 +14,11 @@ const startCameraButton = document.querySelector("#startCamera");
 const recordButton = document.querySelector("#record");
 const switchCameraButton = document.querySelector("#switchCamera");
 const cameraSelect = document.querySelector("#cameraSelect");
+const aiModeSelect = document.querySelector("#aiMode");
 const visualModeSelect = document.querySelector("#visualMode");
 const sensitivityInput = document.querySelector("#sensitivity");
 const detailInput = document.querySelector("#detail");
-const motionOnlyInput = document.querySelector("#motionOnly");
+const drawOverlayInput = document.querySelector("#drawOverlay");
 const globalFilterInput = document.querySelector("#globalFilter");
 const enhanceViewInput = document.querySelector("#enhanceView");
 const clearListButton = document.querySelector("#clearList");
@@ -21,6 +29,34 @@ const analysisCanvas = document.createElement("canvas");
 const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
 const recordingCanvas = document.createElement("canvas");
 const recordingContext = recordingCanvas.getContext("2d");
+
+const MODEL_URLS = {
+  pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+  hands: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+};
+
+const POSE_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8],
+  [9, 10], [11, 12], [11, 13], [13, 15], [15, 17], [15, 19], [15, 21],
+  [17, 19], [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
+  [11, 23], [12, 24], [23, 24], [23, 25], [24, 26], [25, 27], [26, 28],
+  [27, 29], [28, 30], [29, 31], [30, 32], [27, 31], [28, 32],
+];
+
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15],
+  [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
+];
+
+const FACE_CONNECTIONS = [
+  [33, 7], [7, 163], [163, 144], [144, 145], [145, 153], [153, 154], [154, 155], [155, 133],
+  [362, 382], [382, 381], [381, 380], [380, 374], [374, 373], [373, 390], [390, 249], [249, 263],
+  [61, 146], [146, 91], [91, 181], [181, 84], [84, 17], [17, 314], [314, 405], [405, 321], [321, 375], [375, 291],
+  [10, 338], [338, 297], [297, 332], [332, 284], [284, 251], [251, 389], [389, 356], [356, 454], [454, 323], [323, 361], [361, 288],
+  [10, 109], [109, 67], [67, 103], [103, 54], [54, 21], [21, 162], [162, 127], [127, 234], [234, 93], [93, 132], [132, 58],
+];
 
 let stream = null;
 let recordingStream = null;
@@ -33,6 +69,12 @@ let recordingAnimationId = null;
 let facingMode = "environment";
 let isRecording = false;
 let lastMotionAt = 0;
+let lastInferenceAt = 0;
+let visionReady = false;
+let poseLandmarker = null;
+let handLandmarker = null;
+let faceLandmarker = null;
+let lastAi = { poses: [], hands: [], faces: [] };
 let lastMotion = { boxes: [], points: [], strength: 0, filtered: false };
 let trailPoints = [];
 
@@ -46,6 +88,52 @@ const grid = {
 analysisCanvas.width = grid.width;
 analysisCanvas.height = grid.height;
 
+initAi();
+
+async function initAi() {
+  try {
+    setStatus("Cargando IA", "idle");
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
+
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numPoses: 2,
+      minPoseDetectionConfidence: 0.35,
+      minPosePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
+
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
+
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numFaces: 1,
+      minFaceDetectionConfidence: 0.4,
+      minFacePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
+    });
+
+    visionReady = true;
+    setStatus("IA lista", "idle");
+    motionStats.textContent = "IA lista | abre la camara";
+  } catch (error) {
+    console.error(error);
+    setStatus("IA no cargo", "idle");
+    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
+  }
+}
+
 async function startCamera() {
   stopCamera();
 
@@ -55,11 +143,7 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: videoConstraints,
-      audio: true,
-    });
-
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -67,12 +151,13 @@ async function startCamera() {
     previousFrame = null;
     backgroundBrightness = null;
     trailPoints = [];
+    lastAi = { poses: [], hands: [], faces: [] };
     startCameraButton.textContent = "Reiniciar";
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
     cameraSelect.disabled = false;
-    setStatus("Camara activa", "idle");
-    detectMotion();
+    setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
+    detectLoop();
   } catch (error) {
     console.error(error);
     setStatus("Sin permiso", "idle");
@@ -81,15 +166,10 @@ async function startCamera() {
 }
 
 function stopCamera() {
-  if (animationId) {
-    cancelAnimationFrame(animationId);
-    animationId = null;
-  }
-
-  if (recordingAnimationId) {
-    cancelAnimationFrame(recordingAnimationId);
-    recordingAnimationId = null;
-  }
+  if (animationId) cancelAnimationFrame(animationId);
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  animationId = null;
+  recordingAnimationId = null;
 
   if (stream) {
     stream.getTracks().forEach((track) => track.stop());
@@ -99,7 +179,6 @@ function stopCamera() {
 
 async function refreshCameraList() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
-
   const devices = await navigator.mediaDevices.enumerateDevices();
   const cameras = devices.filter((device) => device.kind === "videoinput");
   const activeTrack = stream?.getVideoTracks()[0];
@@ -115,54 +194,204 @@ async function refreshCameraList() {
   });
 }
 
-function resizeOverlay() {
-  const rect = video.getBoundingClientRect();
-  const pixelRatio = window.devicePixelRatio || 1;
-  overlay.width = Math.round(rect.width * pixelRatio);
-  overlay.height = Math.round(rect.height * pixelRatio);
-  overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-}
-
-function detectMotion() {
+function detectLoop() {
   if (!stream || video.readyState < 2) {
-    animationId = requestAnimationFrame(detectMotion);
+    animationId = requestAnimationFrame(detectLoop);
     return;
   }
 
+  updateMotionDetection();
+
+  const now = performance.now();
+  if (visionReady && now - lastInferenceAt > 90) {
+    runAiDetection(now);
+    lastInferenceAt = now;
+  }
+
+  drawScene();
+  updateStatus();
+  animationId = requestAnimationFrame(detectLoop);
+}
+
+function runAiDetection(now) {
+  const mode = aiModeSelect.value;
+  const poses = [];
+  const hands = [];
+  const faces = [];
+
+  try {
+    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
+      const poseResult = poseLandmarker.detectForVideo(video, now);
+      poses.push(...(poseResult.landmarks || []));
+    }
+
+    if (mode === "holistic" || mode === "poseHands") {
+      const handResult = handLandmarker.detectForVideo(video, now);
+      hands.push(...(handResult.landmarks || []));
+    }
+
+    if (mode === "holistic") {
+      const faceResult = faceLandmarker.detectForVideo(video, now);
+      faces.push(...(faceResult.faceLandmarks || []));
+    }
+
+    lastAi = { poses, hands, faces };
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function updateMotionDetection() {
   analysisContext.drawImage(video, 0, 0, grid.width, grid.height);
   const frame = analysisContext.getImageData(0, 0, grid.width, grid.height);
 
-  if (!backgroundBrightness) {
-    backgroundBrightness = buildBrightnessFrame(frame);
-  }
+  if (!backgroundBrightness) backgroundBrightness = buildBrightnessFrame(frame);
 
-  const motion = previousFrame
+  lastMotion = previousFrame
     ? getMotionData(previousFrame, frame, backgroundBrightness)
     : { boxes: [], points: [], strength: 0, filtered: false };
 
-  updateBackground(frame, motion.points.length > 0 ? 0.008 : 0.025);
+  updateBackground(frame, lastMotion.points.length > 0 ? 0.008 : 0.025);
   previousFrame = frame;
-  lastMotion = motion;
+  updateTrail(lastMotion.points);
+}
 
-  updateTrail(motion.points);
-  drawMotion(motion);
-  updateMotionState(motion.points.length > 0, motion.strength, motion.filtered);
-  animationId = requestAnimationFrame(detectMotion);
+function drawScene() {
+  resizeOverlay();
+  const rect = overlay.getBoundingClientRect();
+  overlayContext.clearRect(0, 0, rect.width, rect.height);
+
+  if (!drawOverlayInput.checked) return;
+
+  const mode = aiModeSelect.value;
+  const visual = visualModeSelect.value;
+
+  if (mode === "motion" || visual === "trail" || visual === "heat") {
+    drawMotionOverlay(overlayContext, lastMotion, rect.width, rect.height, visual);
+  }
+
+  if (mode !== "motion" && visual !== "trail" && visual !== "heat") {
+    drawAiOverlay(overlayContext, lastAi, rect.width, rect.height, visual);
+  }
+}
+
+function drawAiOverlay(context, ai, width, height, visual) {
+  const transform = getVideoTransform(width, height);
+
+  ai.poses.forEach((pose) => {
+    drawConnections(context, pose, POSE_CONNECTIONS, transform, "#2cff9a", 4, 0.35);
+    drawLandmarkPoints(context, pose, transform, "#ffdf3d", "#ffffff", 5, 0.35);
+  });
+
+  ai.hands.forEach((hand) => {
+    drawConnections(context, hand, HAND_CONNECTIONS, transform, "#ff4fd8", 3, 0.25);
+    drawLandmarkPoints(context, hand, transform, "#ff4b4b", "#ffffff", 4, 0.25);
+  });
+
+  ai.faces.forEach((face) => {
+    drawConnections(context, face, FACE_CONNECTIONS, transform, "#67d7ff", 2, 0.2);
+    if (visual === "points") drawLandmarkPoints(context, face, transform, "#67d7ff", "#ffffff", 2.2, 0.2, 2);
+  });
+}
+
+function drawConnections(context, landmarks, connections, transform, color, lineWidth, minVisibility) {
+  context.save();
+  context.lineWidth = lineWidth;
+  context.strokeStyle = color;
+  context.shadowColor = "rgba(0, 0, 0, 0.72)";
+  context.shadowBlur = 8;
+
+  connections.forEach(([startIndex, endIndex]) => {
+    const start = landmarks[startIndex];
+    const end = landmarks[endIndex];
+    if (!isVisible(start, minVisibility) || !isVisible(end, minVisibility)) return;
+    const a = toCanvasPoint(start, transform);
+    const b = toCanvasPoint(end, transform);
+    context.beginPath();
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.stroke();
+  });
+
+  context.restore();
+}
+
+function drawLandmarkPoints(context, landmarks, transform, fill, stroke, radius, minVisibility, skip = 1) {
+  context.save();
+  context.lineWidth = 1.4;
+
+  landmarks.forEach((landmark, index) => {
+    if (index % skip !== 0 || !isVisible(landmark, minVisibility)) return;
+    const point = toCanvasPoint(landmark, transform);
+    context.beginPath();
+    context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    context.fillStyle = fill;
+    context.fill();
+    context.strokeStyle = stroke;
+    context.stroke();
+  });
+
+  context.restore();
+}
+
+function isVisible(landmark, minVisibility) {
+  return landmark && (landmark.visibility === undefined || landmark.visibility >= minVisibility);
+}
+
+function getVideoTransform(width, height) {
+  const videoWidth = video.videoWidth || width;
+  const videoHeight = video.videoHeight || height;
+  const scale = Math.max(width / videoWidth, height / videoHeight);
+  const drawWidth = videoWidth * scale;
+  const drawHeight = videoHeight * scale;
+  return {
+    x: (width - drawWidth) / 2,
+    y: (height - drawHeight) / 2,
+    width: drawWidth,
+    height: drawHeight,
+  };
+}
+
+function toCanvasPoint(landmark, transform) {
+  return {
+    x: transform.x + landmark.x * transform.width,
+    y: transform.y + landmark.y * transform.height,
+  };
+}
+
+function updateStatus() {
+  const humanCount = lastAi.poses.length;
+  const handCount = lastAi.hands.length;
+  const faceCount = lastAi.faces.length;
+  const motionCount = lastMotion.points.length;
+  const hasAi = humanCount + handCount + faceCount > 0;
+  const hasMotion = motionCount > 0;
+  const now = Date.now();
+
+  motionStats.textContent = `Cuerpos: ${humanCount} | Manos: ${handCount} | Caras: ${faceCount} | Puntos: ${motionCount}`;
+
+  if (hasAi || hasMotion) {
+    lastMotionAt = now;
+    motionBanner.textContent = hasAi ? "Esqueleto detectado" : "Cambio detectado";
+    motionBanner.classList.add("visible");
+    setStatus(isRecording ? "Grabando" : hasAi ? "IA activa" : "Cambio", isRecording ? "recording" : "motion");
+    return;
+  }
+
+  if (now - lastMotionAt > 700) {
+    motionBanner.classList.remove("visible");
+    setStatus(isRecording ? "Grabando" : "Camara activa", isRecording ? "recording" : "idle");
+  }
 }
 
 function buildBrightnessFrame(frame) {
   const values = new Float32Array(grid.width * grid.height);
-
-  for (let i = 0, pixel = 0; i < frame.data.length; i += 4, pixel += 1) {
-    values[pixel] = brightness(frame.data, i);
-  }
-
+  for (let i = 0, pixel = 0; i < frame.data.length; i += 4, pixel += 1) values[pixel] = brightness(frame.data, i);
   return values;
 }
 
 function updateBackground(frame, rate) {
   if (!backgroundBrightness) return;
-
   for (let i = 0, pixel = 0; i < frame.data.length; i += 4, pixel += 1) {
     const current = brightness(frame.data, i);
     backgroundBrightness[pixel] = backgroundBrightness[pixel] * (1 - rate) + current * rate;
@@ -181,28 +410,13 @@ function getMotionData(previous, current, background) {
     for (let column = 0; column < grid.columns; column += 1) {
       const cell = analyzeCell(previous, current, background, column, row, cellWidth, cellHeight, sensitivity);
       totalDelta += cell.averageDelta;
-
-      if (cell.changedPixels >= detail) {
-        candidates.push(cell);
-      }
+      if (cell.changedPixels >= detail) candidates.push(cell);
     }
   }
 
   const filtered = filterMotionCandidates(candidates, sensitivity, detail);
-  const boxes = filtered.map((cell) => ({
-    x: cell.x,
-    y: cell.y,
-    width: cell.width,
-    height: cell.height,
-    strength: cell.strength,
-  }));
-  const points = filtered.map((cell) => ({
-    x: cell.x + cell.width / 2,
-    y: cell.y + cell.height / 2,
-    strength: cell.strength,
-    age: 1,
-  }));
-
+  const boxes = filtered.map((cell) => ({ x: cell.x, y: cell.y, width: cell.width, height: cell.height, strength: cell.strength }));
+  const points = filtered.map((cell) => ({ x: cell.x + cell.width / 2, y: cell.y + cell.height / 2, strength: cell.strength, age: 1 }));
   const maxCells = grid.columns * grid.rows;
   const strength = Math.min(100, Math.round((points.length / maxCells) * 260 + (totalDelta / maxCells) * 0.5));
   return { boxes, points, strength, filtered: filtered.length < candidates.length };
@@ -219,203 +433,118 @@ function analyzeCell(previous, current, background, column, row, cellWidth, cell
     for (let x = startX; x < startX + cellWidth; x += 3) {
       const pixel = y * grid.width + x;
       const index = pixel * 4;
-      const previousBrightness = brightness(previous.data, index);
-      const currentBrightness = brightness(current.data, index);
-      const frameDelta = Math.abs(currentBrightness - previousBrightness);
-      const backgroundDelta = Math.abs(currentBrightness - background[pixel]);
+      const frameDelta = Math.abs(brightness(current.data, index) - brightness(previous.data, index));
+      const backgroundDelta = Math.abs(brightness(current.data, index) - background[pixel]);
       const effectiveDelta = Math.max(frameDelta, backgroundDelta * 0.72);
       samples += 1;
       cellDelta += effectiveDelta;
-
-      if (effectiveDelta > sensitivity) {
-        changedPixels += 1;
-      }
+      if (effectiveDelta > sensitivity) changedPixels += 1;
     }
   }
 
   const averageDelta = samples ? cellDelta / samples : 0;
   const strength = clamp((averageDelta - sensitivity) / Math.max(1, 82 - sensitivity), 0.16, 1);
-
-  return {
-    x: startX,
-    y: startY,
-    width: cellWidth,
-    height: cellHeight,
-    changedPixels,
-    averageDelta,
-    strength,
-  };
+  return { x: startX, y: startY, width: cellWidth, height: cellHeight, changedPixels, averageDelta, strength };
 }
 
 function filterMotionCandidates(candidates, sensitivity, detail) {
   if (!candidates.length) return [];
-
   const sorted = [...candidates].sort((a, b) => b.averageDelta - a.averageDelta);
   const maxCells = grid.columns * grid.rows;
   const globalRatio = candidates.length / maxCells;
-  const useGlobalFilter = globalFilterInput.checked;
 
-  if (!useGlobalFilter) {
-    return sorted.slice(0, 120);
-  }
+  if (!globalFilterInput.checked) return sorted.slice(0, 120);
 
-  const strongThreshold = Math.max(sensitivity + 8, percentile(sorted.map((cell) => cell.averageDelta), 0.72));
-  let filtered = sorted.filter((cell) => cell.averageDelta >= strongThreshold && cell.changedPixels >= detail);
+  let threshold = Math.max(sensitivity + 8, percentile(sorted.map((cell) => cell.averageDelta), 0.72));
+  let filtered = sorted.filter((cell) => cell.averageDelta >= threshold && cell.changedPixels >= detail);
 
   if (globalRatio > 0.18) {
-    const stricterThreshold = Math.max(sensitivity + 14, percentile(sorted.map((cell) => cell.averageDelta), 0.86));
-    filtered = sorted.filter((cell) => cell.averageDelta >= stricterThreshold && cell.changedPixels >= detail + 2);
+    threshold = Math.max(sensitivity + 14, percentile(sorted.map((cell) => cell.averageDelta), 0.86));
+    filtered = sorted.filter((cell) => cell.averageDelta >= threshold && cell.changedPixels >= detail + 2);
   }
 
-  if (globalRatio > 0.35) {
-    filtered = filtered.slice(0, 36);
-  } else {
-    filtered = filtered.slice(0, 80);
-  }
-
-  return removeCrowdedNeighbors(filtered);
+  return removeCrowdedNeighbors(filtered.slice(0, globalRatio > 0.35 ? 36 : 80));
 }
 
 function removeCrowdedNeighbors(cells) {
   const kept = [];
   const minDistance = 9;
-
   cells.forEach((cell) => {
     const centerX = cell.x + cell.width / 2;
     const centerY = cell.y + cell.height / 2;
-    const tooClose = kept.some((saved) => {
-      const savedX = saved.x + saved.width / 2;
-      const savedY = saved.y + saved.height / 2;
-      return Math.hypot(centerX - savedX, centerY - savedY) < minDistance;
-    });
-
+    const tooClose = kept.some((saved) => Math.hypot(centerX - (saved.x + saved.width / 2), centerY - (saved.y + saved.height / 2)) < minDistance);
     if (!tooClose) kept.push(cell);
   });
-
   return kept;
 }
 
-function percentile(values, ratio) {
-  if (!values.length) return 0;
-  const ordered = [...values].sort((a, b) => a - b);
-  const index = Math.min(ordered.length - 1, Math.max(0, Math.floor(ordered.length * ratio)));
-  return ordered[index];
+function drawMotionOverlay(context, motion, width, height, visual) {
+  if (visual === "heat") drawHeatCells(context, motion.boxes, width, height);
+  if (visual === "trail") drawMotionPoints(context, trailPoints, width, height, 0.9);
+  if (visual === "points" || visual === "skeleton") drawMotionPoints(context, motion.points, width, height, 1);
 }
 
-function brightness(data, index) {
-  return data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function updateTrail(points) {
-  trailPoints = trailPoints
-    .map((point) => ({ ...point, age: point.age - 0.055 }))
-    .filter((point) => point.age > 0);
-
-  if (points.length) {
-    trailPoints.push(...points.map((point) => ({ ...point, age: 1 })));
-  }
-
-  if (trailPoints.length > 260) {
-    trailPoints = trailPoints.slice(trailPoints.length - 260);
-  }
-}
-
-function drawMotion(motion) {
-  resizeOverlay();
-  const rect = overlay.getBoundingClientRect();
-  overlayContext.clearRect(0, 0, rect.width, rect.height);
-
-  if (!motionOnlyInput.checked) return;
-
-  drawMotionOverlay(overlayContext, motion, rect.width, rect.height, visualModeSelect.value);
-}
-
-function drawMotionOverlay(context, motion, width, height, mode) {
-  if (mode === "all" || mode === "heat") {
-    drawHeatCells(context, motion.boxes, width, height, mode === "heat");
-  }
-
-  if (mode === "all" || mode === "points") {
-    drawPoints(context, motion.points, width, height, 1);
-  }
-
-  if (mode === "trail") {
-    drawPoints(context, trailPoints, width, height, 0.9);
-  }
-}
-
-function drawHeatCells(context, boxes, width, height, heatOnly) {
+function drawHeatCells(context, boxes, width, height) {
   const scaleX = width / grid.width;
   const scaleY = height / grid.height;
-
   boxes.forEach((box) => {
-    const x = box.x * scaleX;
-    const y = box.y * scaleY;
-    const boxWidth = box.width * scaleX;
-    const boxHeight = box.height * scaleY;
-    const alpha = heatOnly ? 0.1 + box.strength * 0.45 : 0.04 + box.strength * 0.12;
-    context.fillStyle = `rgba(255, ${Math.round(210 - box.strength * 120)}, 30, ${alpha})`;
-    context.fillRect(x, y, boxWidth, boxHeight);
-
-    if (!heatOnly) {
-      context.lineWidth = 1.2;
-      context.strokeStyle = "rgba(44, 255, 154, 0.42)";
-      context.strokeRect(x, y, boxWidth, boxHeight);
-    }
+    context.fillStyle = `rgba(255, ${Math.round(210 - box.strength * 120)}, 30, ${0.1 + box.strength * 0.45})`;
+    context.fillRect(box.x * scaleX, box.y * scaleY, box.width * scaleX, box.height * scaleY);
   });
 }
 
-function drawPoints(context, points, width, height, opacityMultiplier) {
+function drawMotionPoints(context, points, width, height, opacityMultiplier) {
   const scaleX = width / grid.width;
   const scaleY = height / grid.height;
-
   points.forEach((point) => {
     const x = point.x * scaleX;
     const y = point.y * scaleY;
     const radius = 3 + point.strength * 8;
     const alpha = clamp(point.age * opacityMultiplier, 0.12, 1);
-
     context.beginPath();
     context.arc(x, y, radius + 5, 0, Math.PI * 2);
     context.fillStyle = `rgba(255, 255, 255, ${alpha * 0.22})`;
     context.fill();
-
     context.beginPath();
     context.arc(x, y, radius, 0, Math.PI * 2);
     context.fillStyle = point.strength > 0.55 ? `rgba(255, 56, 56, ${alpha})` : `rgba(255, 210, 40, ${alpha})`;
     context.fill();
-
     context.lineWidth = 1.5;
     context.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.8})`;
     context.stroke();
   });
 }
 
-function updateMotionState(hasMotion, strength, filtered) {
-  const now = Date.now();
-  const filterText = filtered ? " | filtro activo" : "";
-  motionStats.textContent = `Puntos: ${lastMotion.points.length} | Intensidad: ${strength}%${filterText}`;
+function updateTrail(points) {
+  trailPoints = trailPoints.map((point) => ({ ...point, age: point.age - 0.055 })).filter((point) => point.age > 0);
+  if (points.length) trailPoints.push(...points.map((point) => ({ ...point, age: 1 })));
+  if (trailPoints.length > 260) trailPoints = trailPoints.slice(trailPoints.length - 260);
+}
 
-  if (hasMotion) {
-    lastMotionAt = now;
-    motionBanner.classList.add("visible");
-    setStatus(isRecording ? "Grabando" : "Cambio", isRecording ? "recording" : "motion");
-    return;
-  }
+function brightness(data, index) {
+  return data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+}
 
-  if (now - lastMotionAt > 700) {
-    motionBanner.classList.remove("visible");
-    setStatus(isRecording ? "Grabando" : "Camara activa", isRecording ? "recording" : "idle");
-  }
+function percentile(values, ratio) {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered[Math.min(ordered.length - 1, Math.max(0, Math.floor(ordered.length * ratio)))];
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resizeOverlay() {
+  const rect = video.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  overlay.width = Math.round(rect.width * pixelRatio);
+  overlay.height = Math.round(rect.height * pixelRatio);
+  overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
 
 function toggleRecording() {
   if (!stream) return;
-
   if (isRecording) {
     mediaRecorder.stop();
     return;
@@ -423,7 +552,8 @@ function toggleRecording() {
 
   recordedChunks = [];
   recordingStream = createRecordingStream();
-  mediaRecorder = new MediaRecorder(recordingStream, { mimeType: getSupportedMimeType() });
+  const mimeType = getSupportedMimeType();
+  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
   mediaRecorder.ondataavailable = (event) => {
     if (event.data.size > 0) recordedChunks.push(event.data);
   };
@@ -445,56 +575,81 @@ function createRecordingStream() {
     recordingContext.filter = enhanceViewInput.checked ? "contrast(1.45) brightness(1.12) saturate(0.75)" : "none";
     recordingContext.drawImage(video, 0, 0, width, height);
     recordingContext.filter = "none";
-
-    if (motionOnlyInput.checked) {
-      drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
+    if (drawOverlayInput.checked) {
+      if (aiModeSelect.value === "motion" || visualModeSelect.value === "trail" || visualModeSelect.value === "heat") {
+        drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
+      } else {
+        drawAiOverlay(recordingContext, lastAi, width, height, visualModeSelect.value);
+      }
     }
-
     recordingAnimationId = requestAnimationFrame(draw);
   };
 
   draw();
-
   const canvasStream = recordingCanvas.captureStream(30);
   stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   return canvasStream;
 }
 
 function getSupportedMimeType() {
-  const types = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const types = [
+    "video/mp4;codecs=h264,aac",
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
   return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
-function saveRecording() {
-  if (recordingAnimationId) {
-    cancelAnimationFrame(recordingAnimationId);
-    recordingAnimationId = null;
-  }
-
-  if (recordingStream) {
-    recordingStream.getVideoTracks().forEach((track) => track.stop());
-    recordingStream = null;
-  }
-
+async function saveRecording() {
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  recordingAnimationId = null;
+  if (recordingStream) recordingStream.getVideoTracks().forEach((track) => track.stop());
+  recordingStream = null;
   isRecording = false;
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
   setStatus("Camara activa", "idle");
 
-  const blob = new Blob(recordedChunks, { type: "video/webm" });
+  const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
+  const extension = mimeType.includes("mp4") ? "mp4" : "webm";
+  const blob = new Blob(recordedChunks, { type: mimeType });
+  const fileName = `detectorcam-${Date.now()}.${extension}`;
   const url = URL.createObjectURL(blob);
   const item = document.createElement("article");
-  const timestamp = new Date().toLocaleString();
-
   item.className = "recording-item";
+
+  const file = new File([blob], fileName, { type: mimeType });
+  const canShare = navigator.canShare?.({ files: [file] });
   item.innerHTML = `
-    <strong>${timestamp}</strong>
+    <strong>${new Date().toLocaleString()}</strong>
     <video src="${url}" controls playsinline></video>
-    <a href="${url}" download="detectorcam-${Date.now()}.webm">Descargar video</a>
+    <div class="recording-actions">
+      <a href="${url}" download="${fileName}">Descargar video</a>
+      <button type="button" class="ghost save-video">Guardar / compartir</button>
+    </div>
   `;
+
+  item.querySelector(".save-video").addEventListener("click", async () => {
+    if (canShare) {
+      await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
+    } else {
+      const link = item.querySelector("a");
+      link.click();
+    }
+  });
 
   recordingList.querySelector(".empty")?.remove();
   recordingList.prepend(item);
+
+  if (canShare) {
+    try {
+      await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
+    } catch {
+      // The user can still save it with the button.
+    }
+  }
 }
 
 function setStatus(text, mode) {
@@ -512,9 +667,7 @@ startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
 cameraSelect.addEventListener("change", startCamera);
-enhanceViewInput.addEventListener("change", () => {
-  video.classList.toggle("enhanced", enhanceViewInput.checked);
-});
+enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
 clearListButton.addEventListener("click", () => {
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
 });
