@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v7-modo-seguro";
+const CACHE_NAME = "detectorcam-v7-modo-seguro-fix2";
 const ASSETS = [
   "./",
   "./index.html",

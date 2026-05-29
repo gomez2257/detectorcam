@@ -79,10 +79,16 @@ let lastInferenceAt = 0;
 let visionReady = false;
 let aiStatusText = "IA cargando";
 let aiErrorText = "";
+let visionFileset = null;
 let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
 let objectDetector = null;
+const modelLoadPromises = {
+  pose: null,
+  hands: null,
+  face: null,
+};
 let lastObjectInferenceAt = 0;
 let lastAi = { poses: [], hands: [], faces: [] };
 let lastVisibleAi = { poses: [], hands: [], faces: [] };
