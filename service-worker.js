@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v3";
+const CACHE_NAME = "detectorcam-v4-puntos-finos";
 const ASSETS = [
   "./",
   "./index.html",
