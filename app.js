@@ -3,7 +3,7 @@ import {
   FilesetResolver,
   HandLandmarker,
   PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -30,8 +30,6 @@ const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: tr
 const recordingCanvas = document.createElement("canvas");
 const recordingContext = recordingCanvas.getContext("2d");
 
-const MEDIAPIPE_VERSION = "0.10.35";
-const WASM_ROOT = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
 const MODEL_URLS = {
   pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
   hands: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
@@ -76,7 +74,6 @@ let visionReady = false;
 let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
-let aiState = { pose: "cargando", hands: "cargando", face: "cargando" };
 let lastAi = { poses: [], hands: [], faces: [] };
 let lastMotion = { boxes: [], points: [], strength: 0, filtered: false };
 let trailPoints = [];
@@ -94,77 +91,47 @@ analysisCanvas.height = grid.height;
 initAi();
 
 async function initAi() {
-  setStatus("Cargando IA", "idle");
-  motionStats.textContent = "Cargando modelos de cuerpo, manos y cara...";
-
   try {
-    const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-    const results = await Promise.allSettled([
-      createPoseLandmarker(vision),
-      createHandLandmarker(vision),
-      createFaceLandmarker(vision),
-    ]);
+    setStatus("Cargando IA", "idle");
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
 
-    poseLandmarker = results[0].status === "fulfilled" ? results[0].value : null;
-    handLandmarker = results[1].status === "fulfilled" ? results[1].value : null;
-    faceLandmarker = results[2].status === "fulfilled" ? results[2].value : null;
-
-    aiState = {
-      pose: poseLandmarker ? "lista" : "error",
-      hands: handLandmarker ? "lista" : "error",
-      face: faceLandmarker ? "lista" : "error",
-    };
-
-    visionReady = Boolean(poseLandmarker || handLandmarker || faceLandmarker);
-    setStatus(visionReady ? "IA lista" : "IA no cargo", "idle");
-    motionStats.textContent = getAiLoadText();
-    results.forEach((result) => {
-      if (result.status === "rejected") console.error(result.reason);
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numPoses: 2,
+      minPoseDetectionConfidence: 0.35,
+      minPosePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
     });
+
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
+
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numFaces: 1,
+      minFaceDetectionConfidence: 0.4,
+      minFacePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
+    });
+
+    visionReady = true;
+    setStatus("IA lista", "idle");
+    motionStats.textContent = "IA lista | abre la camara";
   } catch (error) {
     console.error(error);
-    aiState = { pose: "error", hands: "error", face: "error" };
-    visionReady = false;
     setStatus("IA no cargo", "idle");
     motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
   }
-}
-
-function createPoseLandmarker(vision) {
-  return PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "CPU" },
-    runningMode: "VIDEO",
-    numPoses: 2,
-    minPoseDetectionConfidence: 0.3,
-    minPosePresenceConfidence: 0.3,
-    minTrackingConfidence: 0.3,
-  });
-}
-
-function createHandLandmarker(vision) {
-  return HandLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "CPU" },
-    runningMode: "VIDEO",
-    numHands: 2,
-    minHandDetectionConfidence: 0.3,
-    minHandPresenceConfidence: 0.3,
-    minTrackingConfidence: 0.3,
-  });
-}
-
-function createFaceLandmarker(vision) {
-  return FaceLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "CPU" },
-    runningMode: "VIDEO",
-    numFaces: 1,
-    minFaceDetectionConfidence: 0.35,
-    minFacePresenceConfidence: 0.35,
-    minTrackingConfidence: 0.35,
-  });
-}
-
-function getAiLoadText() {
-  return `IA cuerpo: ${aiState.pose} | manos: ${aiState.hands} | cara: ${aiState.face}`;
 }
 
 async function startCamera() {
@@ -236,7 +203,7 @@ function detectLoop() {
   updateMotionDetection();
 
   const now = performance.now();
-  if (visionReady && now - lastInferenceAt > 120) {
+  if (visionReady && now - lastInferenceAt > 90) {
     runAiDetection(now);
     lastInferenceAt = now;
   }
@@ -253,17 +220,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
+    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
+    if (mode === "holistic" || mode === "poseHands") {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (faceLandmarker && mode === "holistic") {
+    if (mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -312,18 +279,18 @@ function drawAiOverlay(context, ai, width, height, visual) {
   const transform = getVideoTransform(width, height);
 
   ai.poses.forEach((pose) => {
-    drawConnections(context, pose, POSE_CONNECTIONS, transform, "#2cff9a", 4, 0.25);
-    drawLandmarkPoints(context, pose, transform, "#ffdf3d", "#ffffff", 5, 0.25);
+    drawConnections(context, pose, POSE_CONNECTIONS, transform, "#2cff9a", 4, 0.35);
+    drawLandmarkPoints(context, pose, transform, "#ffdf3d", "#ffffff", 5, 0.35);
   });
 
   ai.hands.forEach((hand) => {
-    drawConnections(context, hand, HAND_CONNECTIONS, transform, "#ff4fd8", 3, 0.2);
-    drawLandmarkPoints(context, hand, transform, "#ff4b4b", "#ffffff", 4, 0.2);
+    drawConnections(context, hand, HAND_CONNECTIONS, transform, "#ff4fd8", 3, 0.25);
+    drawLandmarkPoints(context, hand, transform, "#ff4b4b", "#ffffff", 4, 0.25);
   });
 
   ai.faces.forEach((face) => {
-    drawConnections(context, face, FACE_CONNECTIONS, transform, "#67d7ff", 2, 0.15);
-    drawLandmarkPoints(context, face, transform, "#67d7ff", "#ffffff", visual === "points" ? 2.2 : 1.4, 0.15, visual === "points" ? 2 : 8);
+    drawConnections(context, face, FACE_CONNECTIONS, transform, "#67d7ff", 2, 0.2);
+    if (visual === "points") drawLandmarkPoints(context, face, transform, "#67d7ff", "#ffffff", 2.2, 0.2, 2);
   });
 }
 
@@ -401,11 +368,7 @@ function updateStatus() {
   const hasMotion = motionCount > 0;
   const now = Date.now();
 
-  if (visionReady) {
-    motionStats.textContent = `Cuerpos: ${humanCount} | Manos: ${handCount} | Caras: ${faceCount} | Puntos: ${motionCount}`;
-  } else {
-    motionStats.textContent = `${getAiLoadText()} | Puntos: ${motionCount}`;
-  }
+  motionStats.textContent = `Cuerpos: ${humanCount} | Manos: ${handCount} | Caras: ${faceCount} | Puntos: ${motionCount}`;
 
   if (hasAi || hasMotion) {
     lastMotionAt = now;
@@ -652,85 +615,41 @@ async function saveRecording() {
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
   const blob = new Blob(recordedChunks, { type: mimeType });
-  const fileName = `detectorcam-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+  const fileName = `detectorcam-${Date.now()}.${extension}`;
   const url = URL.createObjectURL(blob);
-  const file = new File([blob], fileName, { type: mimeType });
-  addRecordingItem({ url, file, fileName, mimeType, blob });
-}
-
-function addRecordingItem(recording) {
   const item = document.createElement("article");
   item.className = "recording-item";
+
+  const file = new File([blob], fileName, { type: mimeType });
+  const canShare = navigator.canShare?.({ files: [file] });
   item.innerHTML = `
     <strong>${new Date().toLocaleString()}</strong>
-    <video src="${recording.url}" controls playsinline></video>
+    <video src="${url}" controls playsinline></video>
     <div class="recording-actions">
-      <button type="button" class="primary save-video">Guardar en el movil</button>
-      <button type="button" class="ghost share-video">Compartir</button>
-      <button type="button" class="danger delete-video">Eliminar</button>
+      <a href="${url}" download="${fileName}">Descargar video</a>
+      <button type="button" class="ghost save-video">Guardar / compartir</button>
     </div>
-    <a class="download-link" href="${recording.url}" download="${recording.fileName}">Descarga alternativa</a>
   `;
 
-  const saveButton = item.querySelector(".save-video");
-  const shareButton = item.querySelector(".share-video");
-  const deleteButton = item.querySelector(".delete-video");
-  const downloadLink = item.querySelector(".download-link");
-
-  saveButton.addEventListener("click", async () => {
-    await saveVideoToDevice(recording, downloadLink);
-  });
-
-  shareButton.addEventListener("click", async () => {
-    await shareVideo(recording, downloadLink);
-  });
-
-  deleteButton.addEventListener("click", () => {
-    URL.revokeObjectURL(recording.url);
-    item.remove();
-    if (!recordingList.querySelector(".recording-item")) {
-      recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+  item.querySelector(".save-video").addEventListener("click", async () => {
+    if (canShare) {
+      await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
+    } else {
+      const link = item.querySelector("a");
+      link.click();
     }
   });
-
-  if (!navigator.canShare?.({ files: [recording.file] })) {
-    shareButton.disabled = true;
-  }
 
   recordingList.querySelector(".empty")?.remove();
   recordingList.prepend(item);
-}
 
-async function saveVideoToDevice(recording, fallbackLink) {
-  if (window.showSaveFilePicker) {
+  if (canShare) {
     try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: recording.fileName,
-        types: [{ description: "Video", accept: { [recording.mimeType]: [`.${recording.fileName.split(".").pop()}`] } }],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(recording.blob);
-      await writable.close();
-      return;
-    } catch (error) {
-      if (error.name === "AbortError") return;
+      await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
+    } catch {
+      // The user can still save it with the button.
     }
   }
-
-  fallbackLink.click();
-}
-
-async function shareVideo(recording, fallbackLink) {
-  if (navigator.canShare?.({ files: [recording.file] })) {
-    try {
-      await navigator.share({ files: [recording.file], title: "DetectorCam", text: "Video DetectorCam" });
-      return;
-    } catch (error) {
-      if (error.name === "AbortError") return;
-    }
-  }
-
-  fallbackLink.click();
 }
 
 function setStatus(text, mode) {
@@ -748,12 +667,8 @@ startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
 cameraSelect.addEventListener("change", startCamera);
-aiModeSelect.addEventListener("change", () => {
-  lastAi = { poses: [], hands: [], faces: [] };
-});
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
 clearListButton.addEventListener("click", () => {
-  recordingList.querySelectorAll("video").forEach((videoItem) => URL.revokeObjectURL(videoItem.src));
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
 });
 window.addEventListener("resize", resizeOverlay);
