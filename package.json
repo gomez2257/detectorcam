@@ -1,7 +1,7 @@
 {
-  "name": "detectorcam-v5-pro",
+  "name": "detectorcam-v5-fix-ia-camara",
   "version": "5.3.0",
-  "description": "DetectorCam AI con esqueleto visible, clasificacion de eventos y filtro balanceado contra falsos positivos.",
+  "description": "DetectorCam AI con carga robusta de MediaPipe, cámara estable, eventos y filtro balanceado contra falsos positivos.",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",

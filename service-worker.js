@@ -1,5 +1,5 @@
-const CACHE_NAME = "detectorcam-v5-pro-fix-skeleton-2026-05-29";
-const ASSETS = [
+const CACHE_NAME = "detectorcam-v5-fix-ia-camara-20260529";
+const LOCAL_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
@@ -10,7 +10,7 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(LOCAL_ASSETS)));
   self.skipWaiting();
 });
 
@@ -25,30 +25,19 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
-  const isLocalGet = event.request.method === "GET" && requestUrl.origin === self.location.origin;
-  if (!isLocalGet) return;
 
-  const isCritical = ["/", "/index.html", "/app.js", "/styles.css", "/manifest.json"].includes(requestUrl.pathname);
-
-  if (isCritical) {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
-          return response;
-        })
-        .catch(() => caches.match(event.request))
-    );
+  if (requestUrl.origin !== self.location.origin || event.request.method !== "GET") {
+    event.respondWith(fetch(event.request));
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+    fetch(event.request)
+      .then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
-      });
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });

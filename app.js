@@ -4,7 +4,7 @@ import {
   HandLandmarker,
   ObjectDetector,
   PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.15/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -92,7 +92,6 @@ let previousAiForMotion = { poses: [], hands: [], faces: [] };
 let lastMotion = { boxes: [], points: [], strength: 0, filtered: false };
 let lastObjects = [];
 let lastEventSummary = { type: "none", label: "Sin evento", alert: false };
-let eventStreak = { type: "none", count: 0 };
 let recordingEventTypes = new Set();
 let trailPoints = [];
 
@@ -134,9 +133,9 @@ const OBJECT_LABELS_ES = {
   motorcycle: "moto",
   bicycle: "bicicleta",
   bus: "bus",
-  truck: "camion",
+  truck: "camión",
   chair: "silla",
-  couch: "sofa",
+  couch: "sofá",
   bed: "cama",
   backpack: "morral",
   handbag: "bolso",
@@ -144,7 +143,7 @@ const OBJECT_LABELS_ES = {
   bottle: "botella",
   cup: "vaso",
   cell_phone: "celular",
-  laptop: "portatil",
+  laptop: "portátil",
   tv: "televisor",
   book: "libro",
 };
@@ -167,59 +166,96 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
+  setStatus("Cargando IA", "idle");
+  motionStats.textContent = "Cargando IA. Puedes abrir la cámara mientras termina.";
+
   try {
-    setStatus("Cargando IA", "idle");
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+    const vision = await withTimeout(
+      FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.15/wasm"),
+      18000,
+      "No cargó el motor WASM de MediaPipe"
     );
 
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+    poseLandmarker = await createOptionalTask("pose", () => PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.pose },
       runningMode: "VIDEO",
       numPoses: 2,
-      minPoseDetectionConfidence: 0.48,
-      minPosePresenceConfidence: 0.48,
-      minTrackingConfidence: 0.5,
-    });
+      minPoseDetectionConfidence: 0.42,
+      minPosePresenceConfidence: 0.42,
+      minTrackingConfidence: 0.42,
+    }), 22000);
 
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+    handLandmarker = await createOptionalTask("manos", () => HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.hands },
       runningMode: "VIDEO",
       numHands: 2,
-      minHandDetectionConfidence: 0.45,
-      minHandPresenceConfidence: 0.45,
-      minTrackingConfidence: 0.5,
-    });
+      minHandDetectionConfidence: 0.42,
+      minHandPresenceConfidence: 0.42,
+      minTrackingConfidence: 0.42,
+    }), 18000);
 
-    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numFaces: 1,
-      minFaceDetectionConfidence: 0.48,
-      minFacePresenceConfidence: 0.48,
-      minTrackingConfidence: 0.5,
-    });
-
-    try {
-      objectDetector = await ObjectDetector.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
-        runningMode: "VIDEO",
-        maxResults: 8,
-        scoreThreshold: 0.48,
-      });
-    } catch (error) {
-      console.warn("Detector de objetos no disponible", error);
-      objectDetector = null;
+    // La IA principal queda lista con cuerpo y/o manos. El rostro y objetos son complementos.
+    visionReady = Boolean(poseLandmarker || handLandmarker);
+    if (visionReady) {
+      setStatus("IA lista", "idle");
+      motionStats.textContent = "IA lista | abre la cámara";
+    } else {
+      setStatus("IA parcial", "idle");
+      motionStats.textContent = "IA parcial. Prueba abrir cámara o recarga con internet estable.";
     }
 
-    visionReady = true;
-    setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la cámara";
+    createOptionalTask("rostro", () => FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.face },
+      runningMode: "VIDEO",
+      numFaces: 1,
+      minFaceDetectionConfidence: 0.45,
+      minFacePresenceConfidence: 0.45,
+      minTrackingConfidence: 0.45,
+    }), 18000).then((task) => {
+      faceLandmarker = task;
+      if (task && !visionReady) {
+        visionReady = true;
+        setStatus("IA lista", "idle");
+        motionStats.textContent = "IA lista | abre la cámara";
+      }
+    });
+
+    createOptionalTask("objetos", () => ObjectDetector.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.object },
+      runningMode: "VIDEO",
+      maxResults: 8,
+      scoreThreshold: 0.45,
+    }), 20000).then((task) => {
+      objectDetector = task;
+    });
   } catch (error) {
     console.error(error);
+    visionReady = false;
     setStatus("IA no cargó", "idle");
-    motionStats.textContent = "IA no cargó. Revisa internet y recarga.";
+    motionStats.textContent = `IA no cargó: ${getErrorText(error)}. La cámara puede funcionar en modo movimiento.`;
+  } finally {
+    updateDiagnostics();
   }
+}
+
+async function createOptionalTask(name, factory, timeoutMs) {
+  try {
+    return await withTimeout(factory(), timeoutMs, `Tiempo agotado cargando ${name}`);
+  } catch (error) {
+    console.warn(`Módulo IA no disponible: ${name}`, error);
+    return null;
+  }
+}
+
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
+function getErrorText(error) {
+  return error?.message || String(error || "error desconocido");
 }
 
 async function startCamera() {
@@ -236,7 +272,13 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    } catch (firstError) {
+      console.warn("Primer intento de cámara falló, se intenta modo básico", firstError);
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    }
+
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -250,17 +292,17 @@ async function startCamera() {
     previousAiForMotion = { poses: [], hands: [], faces: [] };
     lastObjects = [];
     lastEventSummary = { type: "none", label: "Sin evento", alert: false };
-    eventStreak = { type: "none", count: 0 };
     startCameraButton.textContent = "Reiniciar";
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
     cameraSelect.disabled = false;
-    setStatus(visionReady ? "Cámara activa" : "Sin IA", "idle");
+    setStatus(visionReady ? "Cámara activa" : "Cámara activa sin IA", "idle");
     detectLoop();
   } catch (error) {
     console.error(error);
     setStatus("Sin permiso", "idle");
-    alert("No se pudo abrir la cámara. Revisa permisos del navegador.");
+    motionStats.textContent = `No se pudo abrir la cámara: ${getErrorText(error)}`;
+    alert("No se pudo abrir la cámara. Revisa permisos del navegador y que estés usando localhost o HTTPS.");
   }
 }
 
@@ -324,17 +366,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
+    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (mode === "holistic" || mode === "poseHands") {
+    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (mode === "holistic") {
+    if (faceLandmarker && mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -347,7 +389,7 @@ function runAiDetection(now) {
 
     lastAi = { poses, hands, faces };
   } catch (error) {
-    console.warn(error);
+    console.warn("Error ejecutando IA en video", error);
   }
 }
 
@@ -446,49 +488,40 @@ function cloneLandmarks(landmarks) {
 }
 
 function landmarkGroupHasTrueMotion(landmarks, previous, type) {
-  if (!landmarks?.length || !previous || previous.length !== landmarks.length) return false;
-  if (!lastMotion.points.length || lastMotion.filtered) return false;
+  if (!landmarks?.length) return false;
 
-  const motion = getMotionMetricsInsideLandmarks(landmarks, type);
+  const motionScore = getMotionScoreInsideLandmarks(landmarks, type);
   const landmarkShift = getLandmarkShift(landmarks, previous, type);
+  const requiredMotion = type === "pose" ? 2.8 : type === "hand" ? 0.9 : 1.6;
+  const requiredShift = type === "pose" ? 0.022 : type === "hand" ? 0.014 : 0.012;
 
-  const requiredScore = type === "pose" ? 2.4 : type === "hand" ? 0.85 : 1.45;
-  const requiredShift = type === "pose" ? 0.019 : type === "hand" ? 0.013 : 0.011;
-  const requiredPoints = type === "pose" ? 3 : type === "hand" ? 2 : 2;
-  const strongShift = type === "pose" ? 0.034 : type === "hand" ? 0.022 : 0.018;
+  if (motionScore >= requiredMotion) return true;
+  if (!lastMotion.points.length) return false;
 
-  const hasLocalMotion = motion.count >= requiredPoints && motion.score >= requiredScore;
-  const hasStrongTrackedMovement = motion.count >= Math.max(1, requiredPoints - 1) && landmarkShift >= strongShift && motion.score >= requiredScore * 0.65;
+  const localMotionRatio = motionScore / requiredMotion;
+  if (lastMotion.filtered && localMotionRatio < 0.7) return false;
 
-  return landmarkShift >= requiredShift && (hasLocalMotion || hasStrongTrackedMovement);
+  return landmarkShift >= requiredShift && localMotionRatio >= 0.35;
 }
+function getMotionScoreInsideLandmarks(landmarks, type) {
+  if (!lastMotion.points.length) return 0;
 
-function getMotionMetricsInsideLandmarks(landmarks, type) {
-  if (!lastMotion.points.length) return { score: 0, count: 0, strongest: 0 };
+  const visible = landmarks.filter((landmark) => isVisible(landmark, type === "face" ? 0.12 : 0.2));
+  if (!visible.length) return 0;
 
-  const visible = landmarks.filter((landmark) => isVisible(landmark, type === "face" ? 0.14 : 0.24));
-  if (!visible.length) return { score: 0, count: 0, strongest: 0 };
-
-  const padding = type === "hand" ? 0.045 : type === "face" ? 0.04 : 0.055;
+  const padding = type === "hand" ? 0.05 : type === "face" ? 0.04 : 0.055;
   const minX = Math.max(0, Math.min(...visible.map((landmark) => landmark.x)) - padding);
   const maxX = Math.min(1, Math.max(...visible.map((landmark) => landmark.x)) + padding);
   const minY = Math.max(0, Math.min(...visible.map((landmark) => landmark.y)) - padding);
   const maxY = Math.min(1, Math.max(...visible.map((landmark) => landmark.y)) + padding);
 
-  return lastMotion.points.reduce((result, point) => {
+  return lastMotion.points.reduce((score, point) => {
     const x = point.x / grid.width;
     const y = point.y / grid.height;
-    if (x < minX || x > maxX || y < minY || y > maxY) return result;
-    if (point.strength < 0.42) return result;
-    result.score += point.strength;
-    result.count += 1;
-    result.strongest = Math.max(result.strongest, point.strength);
-    return result;
-  }, { score: 0, count: 0, strongest: 0 });
-}
-
-function getMotionScoreInsideLandmarks(landmarks, type) {
-  return getMotionMetricsInsideLandmarks(landmarks, type).score;
+    if (x < minX || x > maxX || y < minY || y > maxY) return score;
+    if (point.strength < 0.42) return score;
+    return score + point.strength;
+  }, 0);
 }
 
 function getLandmarkShift(landmarks, previous, type) {
@@ -522,9 +555,8 @@ function normalizeObjectDetections(detections) {
 
       const score = category.score || 0;
       const kind = rawLabel === "person" ? "person" : ANIMAL_LABELS.has(rawLabel) ? "animal" : "object";
-      const motion = getMotionMetricsInsideNormalizedBox(box, kind === "person" ? 0.035 : 0.03);
-      const movingThreshold = kind === "person" ? 2.3 : kind === "animal" ? 1.2 : 1.55;
-      const minMovingPoints = kind === "person" ? 3 : 2;
+      const motionScore = getMotionScoreInsideNormalizedBox(box, kind === "person" ? 0.04 : 0.03);
+      const movingThreshold = kind === "person" ? 1.8 : kind === "animal" ? 0.9 : 1.15;
 
       return {
         label: rawLabel,
@@ -532,13 +564,12 @@ function normalizeObjectDetections(detections) {
         score,
         kind,
         box,
-        moving: motion.score >= movingThreshold && motion.count >= minMovingPoints && !lastMotion.filtered,
-        motionScore: motion.score,
-        motionPoints: motion.count,
+        moving: motionScore >= movingThreshold,
+        motionScore,
       };
     })
     .filter(Boolean)
-    .filter((object) => object.score >= 0.48);
+    .filter((object) => object.score >= 0.42);
 }
 
 function normalizeBoundingBox(box, frameWidth, frameHeight) {
@@ -568,50 +599,40 @@ function translateObjectLabel(label) {
 }
 
 function getMotionScoreInsideNormalizedBox(box, padding = 0.03) {
-  return getMotionMetricsInsideNormalizedBox(box, padding).score;
-}
-
-function getMotionMetricsInsideNormalizedBox(box, padding = 0.03) {
-  if (!lastMotion.points.length) return { score: 0, count: 0, strongest: 0 };
+  if (!lastMotion.points.length) return 0;
   const minX = Math.max(0, box.x - padding);
   const maxX = Math.min(1, box.x + box.width + padding);
   const minY = Math.max(0, box.y - padding);
   const maxY = Math.min(1, box.y + box.height + padding);
 
-  return lastMotion.points.reduce((result, point) => {
+  return lastMotion.points.reduce((score, point) => {
     const x = point.x / grid.width;
     const y = point.y / grid.height;
-    if (x < minX || x > maxX || y < minY || y > maxY) return result;
-    if (point.strength < 0.42) return result;
-    result.score += point.strength;
-    result.count += 1;
-    result.strongest = Math.max(result.strongest, point.strength);
-    return result;
-  }, { score: 0, count: 0, strongest: 0 });
+    if (x < minX || x > maxX || y < minY || y > maxY) return score;
+    return score + point.strength;
+  }, 0);
 }
 
 function isLikelyHumanPose(pose) {
   if (!pose?.length) return false;
-  const visible = (index, min = 0.28) => isVisible(pose[index], min);
-  const visibleCount = pose.filter((landmark) => isVisible(landmark, 0.28)).length;
-  const headCount = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter((index) => visible(index, 0.24)).length;
-  const armCount = [13, 14, 15, 16].filter((index) => visible(index, 0.24)).length;
-  const legCount = [25, 26, 27, 28, 29, 30, 31, 32].filter((index) => visible(index, 0.24)).length;
-  const hasShoulders = visible(11, 0.28) && visible(12, 0.28);
-  const hasHips = visible(23, 0.24) && visible(24, 0.24);
-  const hasHeadOrLimbs = headCount >= 2 || armCount >= 2 || legCount >= 2;
+  const visible = (index, min = 0.24) => isVisible(pose[index], min);
+  const visibleCount = pose.filter((landmark) => isVisible(landmark, 0.24)).length;
+  const headCount = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter((index) => visible(index, 0.22)).length;
+  const armCount = [13, 14, 15, 16].filter((index) => visible(index, 0.22)).length;
+  const legCount = [25, 26, 27, 28, 29, 30, 31, 32].filter((index) => visible(index, 0.22)).length;
+  const hasShoulders = visible(11, 0.24) && visible(12, 0.24);
+  const hasHips = visible(23, 0.22) && visible(24, 0.22);
 
-  if (visibleCount < 8 || !hasShoulders || !hasHeadOrLimbs) return false;
+  if (visibleCount < 8 || !hasShoulders) return false;
 
   const shoulderWidth = Math.abs(pose[11].x - pose[12].x);
   const shoulderY = (pose[11].y + pose[12].y) / 2;
-  const hipY = hasHips ? (pose[23].y + pose[24].y) / 2 : shoulderY + 0.09;
+  const hipY = hasHips ? (pose[23].y + pose[24].y) / 2 : shoulderY + 0.08;
   const torsoHeight = Math.abs(hipY - shoulderY);
-  const bodyRatio = torsoHeight / Math.max(shoulderWidth, 0.001);
-  const plausibleScale = shoulderWidth > 0.04 && shoulderWidth < 0.72 && torsoHeight > 0.04;
-  const plausibleRatio = bodyRatio > 0.35 && bodyRatio < 5.2;
+  const hasHumanCore = hasHips || headCount >= 2 || armCount >= 2 || legCount >= 2;
+  const plausibleScale = shoulderWidth > 0.035 && shoulderWidth < 0.75 && torsoHeight > 0.035;
 
-  return plausibleScale && plausibleRatio;
+  return hasHumanCore && plausibleScale;
 }
 
 function getDetectionSummary() {
@@ -619,17 +640,15 @@ function getDetectionSummary() {
   const movingPseudoPoses = lastVisibleAi.poses.length - movingHumanPoses;
   const staticHumanPoses = lastStaticAi.poses.filter(isLikelyHumanPose).length;
   const staticPseudoPoses = lastStaticAi.poses.length - staticHumanPoses;
-
-  const movingHumanParts = movingHumanPoses > 0 ? lastVisibleAi.hands.length + lastVisibleAi.faces.length : 0;
-  const staticHumanParts = staticHumanPoses > 0 ? lastStaticAi.hands.length + lastStaticAi.faces.length : 0;
-
+  const movingHumanParts = lastVisibleAi.hands.length + lastVisibleAi.faces.length;
+  const staticHumanParts = lastStaticAi.hands.length + lastStaticAi.faces.length;
   const movingPeople = movingHumanPoses > 0 || movingHumanParts > 0 ? Math.max(1, movingHumanPoses) : 0;
   const staticPeople = staticHumanPoses > 0 || staticHumanParts > 0 ? Math.max(1, staticHumanPoses) : 0;
   const movingAnimals = lastObjects.filter((object) => object.kind === "animal" && object.moving).length;
   const movingObjects = lastObjects.filter((object) => object.kind === "object" && object.moving).length;
-  const quietObjects = lastObjects.filter((object) => !object.moving && object.kind !== "person").length + staticPseudoPoses + movingPseudoPoses;
-  const hasUnclassifiedMotion = lastMotion.points.length >= 4 && !lastMotion.filtered && movingPeople === 0 && movingAnimals === 0 && movingObjects === 0;
-  const anomalies = hasUnclassifiedMotion ? 1 : 0;
+  const quietObjects = lastObjects.filter((object) => !object.moving && object.kind !== "person").length + staticPseudoPoses;
+  const hasUnclassifiedMotion = lastMotion.points.length > 0 && movingPeople === 0 && movingAnimals === 0 && movingObjects === 0;
+  const anomalies = movingPseudoPoses + (hasUnclassifiedMotion ? 1 : 0);
 
   let type = "none";
   if (movingPeople > 0) type = "person";
@@ -639,32 +658,17 @@ function getDetectionSummary() {
   else if (staticPeople > 0) type = "quietPerson";
   else if (quietObjects > 0 || lastStaticAi.poses.length > 0) type = "quietObject";
 
-  const alert = ["person", "animal", "object", "anomaly"].includes(type);
-  const stableAlert = isStableAlert(type, alert);
-
   return {
-    type: stableAlert || !alert ? type : "none",
-    label: stableAlert || !alert ? (EVENT_LABELS[type] || EVENT_LABELS.none) : "Verificando movimiento",
-    alert: Boolean(stableAlert),
-    movingPeople: stableAlert || type !== "person" ? movingPeople : 0,
-    movingAnimals: stableAlert || type !== "animal" ? movingAnimals : 0,
-    movingObjects: stableAlert || type !== "object" ? movingObjects : 0,
-    anomalies: stableAlert || type !== "anomaly" ? anomalies : 0,
+    type,
+    label: EVENT_LABELS[type] || EVENT_LABELS.none,
+    alert: ["person", "animal", "object", "anomaly"].includes(type),
+    movingPeople,
+    movingAnimals,
+    movingObjects,
+    anomalies,
     quiet: staticPeople + quietObjects,
     points: lastMotion.points.length,
   };
-}
-
-function isStableAlert(type, alert) {
-  if (!alert) {
-    eventStreak = { type, count: 0 };
-    return false;
-  }
-
-  if (eventStreak.type === type) eventStreak.count += 1;
-  else eventStreak = { type, count: 1 };
-
-  return eventStreak.count >= 2;
 }
 
 function rememberRecordingEvent(summary = lastEventSummary) {
@@ -1056,24 +1060,38 @@ async function toggleRecording() {
   recordedChunks = [];
   recordingEventTypes = new Set();
   rememberRecordingEvent(getDetectionSummary());
-  recordingStream = await createRecordingStream();
-  const mimeType = getSupportedMimeType();
-  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) recordedChunks.push(event.data);
-  };
-  mediaRecorder.onstop = saveRecording;
-  mediaRecorder.start();
-  isRecording = true;
-  recordButton.textContent = "Detener";
-  recordButton.classList.add("primary");
-  startCameraButton.disabled = true;
-  switchCameraButton.disabled = true;
-  cameraSelect.disabled = true;
-  setStatus("Grabando", "recording");
+
+  try {
+    try {
+      recordingAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (audioError) {
+      console.warn("Grabación sin audio", audioError);
+      recordingAudioStream = null;
+    }
+
+    recordingStream = createRecordingStream();
+    const mimeType = getSupportedMimeType();
+    mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordedChunks.push(event.data);
+    };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start();
+    isRecording = true;
+    startCameraButton.disabled = true;
+    switchCameraButton.disabled = true;
+    cameraSelect.disabled = true;
+    recordButton.textContent = "Detener";
+    recordButton.classList.add("primary");
+    setStatus("Grabando", "recording");
+  } catch (error) {
+    console.error(error);
+    setStatus("No grabó", "idle");
+    motionStats.textContent = `No se pudo iniciar la grabación: ${getErrorText(error)}`;
+  }
 }
 
-async function createRecordingStream() {
+function createRecordingStream() {
   const width = video.videoWidth || 1280;
   const height = video.videoHeight || 720;
   recordingCanvas.width = width;
@@ -1097,15 +1115,7 @@ async function createRecordingStream() {
 
   draw();
   const canvasStream = recordingCanvas.captureStream(30);
-
-  try {
-    recordingAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    recordingAudioStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
-  } catch (error) {
-    console.warn("Grabación sin audio", error);
-    recordingAudioStream = null;
-  }
-
+  recordingAudioStream?.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   return canvasStream;
 }
 
@@ -1125,19 +1135,15 @@ async function saveRecording() {
   recordingAnimationId = null;
   if (recordingStream) recordingStream.getTracks().forEach((track) => track.stop());
   recordingStream = null;
-  if (recordingAudioStream) {
-    recordingAudioStream.getTracks().forEach((track) => track.stop());
-    recordingAudioStream = null;
-  }
+  if (recordingAudioStream) recordingAudioStream.getTracks().forEach((track) => track.stop());
+  recordingAudioStream = null;
   isRecording = false;
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
   startCameraButton.disabled = false;
-  switchCameraButton.disabled = !stream;
-  cameraSelect.disabled = !stream;
-  setStatus(stream ? "Cámara activa" : "Lista", "idle");
-
-  if (!recordedChunks.length) return;
+  switchCameraButton.disabled = false;
+  cameraSelect.disabled = false;
+  setStatus("Cámara activa", "idle");
 
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -1253,7 +1259,7 @@ async function renderStoredRecordings() {
 
   recordingList.innerHTML = "";
   if (!records.length) {
-    recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aquí.</p>';
+    recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     updateDiagnostics();
     return;
   }
@@ -1322,7 +1328,7 @@ function renderEphemeralRecording(recording) {
     activeRecordingUrls.delete(url);
     item.remove();
     if (!recordingList.querySelector(".recording-item")) {
-      recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aquí.</p>';
+      recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     }
   });
   recordingList.querySelector(".empty")?.remove();
@@ -1362,10 +1368,6 @@ function setStatus(text, mode) {
 }
 
 async function switchCamera() {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de cambiar cámara", "recording");
-    return;
-  }
   cameraSelect.value = "";
   facingMode = facingMode === "environment" ? "user" : "environment";
   await startCamera();
@@ -1374,13 +1376,7 @@ async function switchCamera() {
 startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
-cameraSelect.addEventListener("change", () => {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de cambiar cámara", "recording");
-    return;
-  }
-  startCamera();
-});
+cameraSelect.addEventListener("change", startCamera);
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
 motionGateInput?.addEventListener("change", () => {
   classifyAiForMotion();
@@ -1395,7 +1391,7 @@ clearListButton.addEventListener("click", async () => {
   revokeActiveRecordingUrls();
   storedRecordingCount = 0;
   storedRecordingBytes = 0;
-  recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aquí.</p>';
+  recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
   updateDiagnostics();
 });
 window.addEventListener("resize", resizeOverlay);
