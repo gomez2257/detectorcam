@@ -1,0 +1,60 @@
+﻿<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101820" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="DetectorCam" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>DetectorCam</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="camera-shell" aria-label="Camara con detector de movimiento">
+        <video id="camera" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="top-bar">
+          <div>
+            <p class="eyebrow">DetectorCam</p>
+            <h1>Movimiento en vivo</h1>
+          </div>
+          <div id="status" class="status idle">Lista</div>
+        </div>
+        <div class="motion-banner" id="motionBanner">Movimiento detectado</div>
+      </section>
+
+      <section class="controls" aria-label="Controles">
+        <button id="startCamera" class="primary">Abrir camara</button>
+        <button id="record" disabled>Grabar</button>
+        <button id="switchCamera" disabled>Cambiar camara</button>
+
+        <label class="range">
+          <span>Sensibilidad</span>
+          <input id="sensitivity" type="range" min="12" max="70" value="32" />
+        </label>
+
+        <label class="toggle">
+          <input id="motionOnly" type="checkbox" checked />
+          <span>Marcar movimiento</span>
+        </label>
+      </section>
+
+      <section class="recordings" aria-label="Grabaciones">
+        <div class="section-title">
+          <h2>Grabaciones</h2>
+          <button id="clearList" class="ghost">Limpiar</button>
+        </div>
+        <div id="recordingList" class="recording-list">
+          <p class="empty">Cuando termines una grabacion aparecera aqui.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
