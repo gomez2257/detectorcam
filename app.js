@@ -1,12 +1,17 @@
-﻿const video = document.querySelector("#camera");
+const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
 const statusLabel = document.querySelector("#status");
 const motionBanner = document.querySelector("#motionBanner");
+const motionStats = document.querySelector("#motionStats");
 const startCameraButton = document.querySelector("#startCamera");
 const recordButton = document.querySelector("#record");
 const switchCameraButton = document.querySelector("#switchCamera");
+const cameraSelect = document.querySelector("#cameraSelect");
+const visualModeSelect = document.querySelector("#visualMode");
 const sensitivityInput = document.querySelector("#sensitivity");
+const detailInput = document.querySelector("#detail");
 const motionOnlyInput = document.querySelector("#motionOnly");
+const enhanceViewInput = document.querySelector("#enhanceView");
 const clearListButton = document.querySelector("#clearList");
 const recordingList = document.querySelector("#recordingList");
 
@@ -26,13 +31,14 @@ let recordingAnimationId = null;
 let facingMode = "environment";
 let isRecording = false;
 let lastMotionAt = 0;
-let lastMotionBoxes = [];
+let lastMotion = { boxes: [], points: [], strength: 0 };
+let trailPoints = [];
 
 const grid = {
-  columns: 16,
-  rows: 12,
-  width: 320,
-  height: 240,
+  columns: 30,
+  rows: 22,
+  width: 360,
+  height: 264,
 };
 
 analysisCanvas.width = grid.width;
@@ -42,22 +48,26 @@ async function startCamera() {
   stopCamera();
 
   try {
+    const selectedDeviceId = cameraSelect.value;
+    const videoConstraints = selectedDeviceId
+      ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
+
     stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode,
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
+      video: videoConstraints,
       audio: true,
     });
 
     video.srcObject = stream;
     await video.play();
+    await refreshCameraList();
     resizeOverlay();
     previousFrame = null;
+    trailPoints = [];
     startCameraButton.textContent = "Reiniciar";
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
+    cameraSelect.disabled = false;
     setStatus("Camara activa", "idle");
     detectMotion();
   } catch (error) {
@@ -84,6 +94,24 @@ function stopCamera() {
   }
 }
 
+async function refreshCameraList() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter((device) => device.kind === "videoinput");
+  const activeTrack = stream?.getVideoTracks()[0];
+  const activeDeviceId = activeTrack?.getSettings().deviceId || cameraSelect.value;
+
+  cameraSelect.innerHTML = '<option value="">Camara automatica</option>';
+  cameras.forEach((camera, index) => {
+    const option = document.createElement("option");
+    option.value = camera.deviceId;
+    option.textContent = camera.label || `Camara ${index + 1}`;
+    option.selected = camera.deviceId === activeDeviceId;
+    cameraSelect.append(option);
+  });
+}
+
 function resizeOverlay() {
   const rect = video.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
@@ -100,24 +128,30 @@ function detectMotion() {
 
   analysisContext.drawImage(video, 0, 0, grid.width, grid.height);
   const frame = analysisContext.getImageData(0, 0, grid.width, grid.height);
-  const boxes = previousFrame ? getMotionBoxes(previousFrame, frame) : [];
+  const motion = previousFrame ? getMotionData(previousFrame, frame) : { boxes: [], points: [], strength: 0 };
   previousFrame = frame;
-  lastMotionBoxes = boxes;
+  lastMotion = motion;
 
-  drawMotion(boxes);
-  updateMotionState(boxes.length > 0);
+  updateTrail(motion.points);
+  drawMotion(motion);
+  updateMotionState(motion.points.length > 0, motion.strength);
   animationId = requestAnimationFrame(detectMotion);
 }
 
-function getMotionBoxes(previous, current) {
+function getMotionData(previous, current) {
   const cellWidth = Math.floor(grid.width / grid.columns);
   const cellHeight = Math.floor(grid.height / grid.rows);
   const boxes = [];
+  const points = [];
   const sensitivity = Number(sensitivityInput.value);
+  const detail = Number(detailInput.value);
+  let totalDelta = 0;
 
   for (let row = 0; row < grid.rows; row += 1) {
     for (let column = 0; column < grid.columns; column += 1) {
       let changedPixels = 0;
+      let cellDelta = 0;
+      let samples = 0;
       const startX = column * cellWidth;
       const startY = row * cellHeight;
 
@@ -126,78 +160,130 @@ function getMotionBoxes(previous, current) {
           const index = (y * grid.width + x) * 4;
           const previousBrightness = brightness(previous.data, index);
           const currentBrightness = brightness(current.data, index);
+          const delta = Math.abs(currentBrightness - previousBrightness);
+          samples += 1;
+          cellDelta += delta;
 
-          if (Math.abs(currentBrightness - previousBrightness) > sensitivity) {
+          if (delta > sensitivity) {
             changedPixels += 1;
           }
         }
       }
 
-      if (changedPixels > 12) {
-        boxes.push({ x: startX, y: startY, width: cellWidth, height: cellHeight });
+      const averageDelta = samples ? cellDelta / samples : 0;
+      totalDelta += averageDelta;
+
+      if (changedPixels >= detail) {
+        const strength = clamp((averageDelta - sensitivity) / Math.max(1, 80 - sensitivity), 0.18, 1);
+        const centerX = startX + cellWidth / 2;
+        const centerY = startY + cellHeight / 2;
+        boxes.push({ x: startX, y: startY, width: cellWidth, height: cellHeight, strength });
+        points.push({ x: centerX, y: centerY, strength, age: 1 });
       }
     }
   }
 
-  return mergeNearbyBoxes(boxes, cellWidth, cellHeight);
+  const maxCells = grid.columns * grid.rows;
+  const strength = Math.min(100, Math.round((points.length / maxCells) * 240 + (totalDelta / maxCells) * 0.45));
+  return { boxes, points, strength };
 }
 
 function brightness(data, index) {
   return data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
 }
 
-function mergeNearbyBoxes(boxes, cellWidth, cellHeight) {
-  if (!boxes.length) return [];
-
-  const minX = Math.min(...boxes.map((box) => box.x));
-  const minY = Math.min(...boxes.map((box) => box.y));
-  const maxX = Math.max(...boxes.map((box) => box.x + box.width));
-  const maxY = Math.max(...boxes.map((box) => box.y + box.height));
-
-  return [
-    {
-      x: Math.max(0, minX - cellWidth),
-      y: Math.max(0, minY - cellHeight),
-      width: Math.min(grid.width, maxX - minX + cellWidth * 2),
-      height: Math.min(grid.height, maxY - minY + cellHeight * 2),
-    },
-  ];
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
-function drawMotion(boxes) {
+function updateTrail(points) {
+  trailPoints = trailPoints
+    .map((point) => ({ ...point, age: point.age - 0.06 }))
+    .filter((point) => point.age > 0);
+
+  if (points.length) {
+    trailPoints.push(...points.map((point) => ({ ...point, age: 1 })));
+  }
+
+  if (trailPoints.length > 320) {
+    trailPoints = trailPoints.slice(trailPoints.length - 320);
+  }
+}
+
+function drawMotion(motion) {
   resizeOverlay();
-  overlayContext.clearRect(0, 0, overlay.width, overlay.height);
+  const rect = overlay.getBoundingClientRect();
+  overlayContext.clearRect(0, 0, rect.width, rect.height);
 
   if (!motionOnlyInput.checked) return;
 
-  const rect = overlay.getBoundingClientRect();
-  drawBoxes(overlayContext, boxes, rect.width, rect.height);
+  drawMotionOverlay(overlayContext, motion, rect.width, rect.height, visualModeSelect.value);
 }
 
-function drawBoxes(context, boxes, width, height) {
+function drawMotionOverlay(context, motion, width, height, mode) {
+  if (mode === "all" || mode === "heat") {
+    drawHeatCells(context, motion.boxes, width, height, mode === "heat");
+  }
+
+  if (mode === "all" || mode === "points") {
+    drawPoints(context, motion.points, width, height, 1);
+  }
+
+  if (mode === "trail") {
+    drawPoints(context, trailPoints, width, height, 0.9);
+  }
+}
+
+function drawHeatCells(context, boxes, width, height, heatOnly) {
   const scaleX = width / grid.width;
   const scaleY = height / grid.height;
-
-  context.lineWidth = Math.max(3, Math.round(width / 180));
-  context.strokeStyle = "#2cff9a";
-  context.fillStyle = "rgba(44, 255, 154, 0.14)";
-  context.font = `700 ${Math.max(18, Math.round(width / 42))}px Arial`;
 
   boxes.forEach((box) => {
     const x = box.x * scaleX;
     const y = box.y * scaleY;
     const boxWidth = box.width * scaleX;
     const boxHeight = box.height * scaleY;
+    const alpha = heatOnly ? 0.1 + box.strength * 0.45 : 0.06 + box.strength * 0.16;
+    context.fillStyle = `rgba(255, ${Math.round(210 - box.strength * 120)}, 30, ${alpha})`;
     context.fillRect(x, y, boxWidth, boxHeight);
-    context.strokeRect(x, y, boxWidth, boxHeight);
-    context.fillStyle = "#2cff9a";
-    context.fillText("Movimiento", x + 10, Math.max(28, y - 8));
-    context.fillStyle = "rgba(44, 255, 154, 0.14)";
+
+    if (!heatOnly) {
+      context.lineWidth = 1.6;
+      context.strokeStyle = "rgba(44, 255, 154, 0.78)";
+      context.strokeRect(x, y, boxWidth, boxHeight);
+    }
   });
 }
 
-function updateMotionState(hasMotion) {
+function drawPoints(context, points, width, height, opacityMultiplier) {
+  const scaleX = width / grid.width;
+  const scaleY = height / grid.height;
+
+  points.forEach((point) => {
+    const x = point.x * scaleX;
+    const y = point.y * scaleY;
+    const radius = 3 + point.strength * 8;
+    const alpha = clamp(point.age * opacityMultiplier, 0.12, 1);
+
+    context.beginPath();
+    context.arc(x, y, radius + 4, 0, Math.PI * 2);
+    context.fillStyle = `rgba(255, 255, 255, ${alpha * 0.22})`;
+    context.fill();
+
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = point.strength > 0.55 ? `rgba(255, 56, 56, ${alpha})` : `rgba(255, 210, 40, ${alpha})`;
+    context.fill();
+
+    context.lineWidth = 1.5;
+    context.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.8})`;
+    context.stroke();
+  });
+}
+
+function updateMotionState(hasMotion, strength) {
   const now = Date.now();
+  motionStats.textContent = `Puntos: ${lastMotion.points.length} | Intensidad: ${strength}%`;
 
   if (hasMotion) {
     lastMotionAt = now;
@@ -241,10 +327,17 @@ function createRecordingStream() {
   recordingCanvas.height = height;
 
   const draw = () => {
+    if (enhanceViewInput.checked) {
+      recordingContext.filter = "contrast(1.45) brightness(1.12) saturate(0.75)";
+    } else {
+      recordingContext.filter = "none";
+    }
+
     recordingContext.drawImage(video, 0, 0, width, height);
+    recordingContext.filter = "none";
 
     if (motionOnlyInput.checked) {
-      drawBoxes(recordingContext, lastMotionBoxes, width, height);
+      drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
     }
 
     recordingAnimationId = requestAnimationFrame(draw);
@@ -300,6 +393,7 @@ function setStatus(text, mode) {
 }
 
 async function switchCamera() {
+  cameraSelect.value = "";
   facingMode = facingMode === "environment" ? "user" : "environment";
   await startCamera();
 }
@@ -307,6 +401,10 @@ async function switchCamera() {
 startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
+cameraSelect.addEventListener("change", startCamera);
+enhanceViewInput.addEventListener("change", () => {
+  video.classList.toggle("enhanced", enhanceViewInput.checked);
+});
 clearListButton.addEventListener("click", () => {
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
 });

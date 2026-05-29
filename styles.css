@@ -16,7 +16,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -40,6 +41,10 @@ input {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+#camera.enhanced {
+  filter: contrast(1.45) brightness(1.12) saturate(0.75);
 }
 
 #overlay {
@@ -77,6 +82,13 @@ h1 {
   margin-top: 4px;
   font-size: 24px;
   line-height: 1.1;
+}
+
+.stats {
+  margin-top: 7px;
+  color: #d8f5ff;
+  font-size: 13px;
+  text-shadow: 0 1px 10px #000;
 }
 
 .status {
@@ -134,17 +146,22 @@ h1 {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-button {
+button,
+select {
   min-height: 44px;
-  border: 0;
   border-radius: 8px;
+}
+
+button {
+  border: 0;
   padding: 10px 12px;
   background: #e8edf2;
   color: #111820;
   font-weight: 700;
 }
 
-button:disabled {
+button:disabled,
+select:disabled {
   opacity: 0.46;
 }
 
@@ -159,6 +176,7 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
+.field,
 .range,
 .toggle {
   grid-column: 1 / -1;
@@ -169,6 +187,20 @@ button:disabled {
   min-height: 44px;
 }
 
+.field span,
+.range span,
+.toggle span {
+  line-height: 1.25;
+}
+
+.field-full select {
+  width: min(58vw, 360px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  padding: 8px 10px;
+  background: #0f171f;
+  color: #f6f7f9;
+}
+
 .range input {
   width: min(55vw, 320px);
 }
@@ -176,6 +208,7 @@ button:disabled {
 .toggle input {
   width: 22px;
   height: 22px;
+  flex: 0 0 auto;
 }
 
 .recordings {
@@ -222,6 +255,22 @@ h2 {
 .empty {
   color: #a9b5bf;
   line-height: 1.4;
+}
+
+@media (max-width: 430px) {
+  .controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+  }
+
+  button {
+    padding: 8px 10px;
+  }
+
+  h1 {
+    font-size: 23px;
+  }
 }
 
 @media (min-width: 760px) {
