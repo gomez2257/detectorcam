@@ -1,12 +1,10 @@
-const MEDIAPIPE_VERSION = "0.10.22";
-const MEDIAPIPE_BUNDLE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/vision_bundle.mjs`;
-const MEDIAPIPE_WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
-
-let FaceLandmarker = null;
-let FilesetResolver = null;
-let HandLandmarker = null;
-let ObjectDetector = null;
-let PoseLandmarker = null;
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  HandLandmarker,
+  ObjectDetector,
+  PoseLandmarker,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -42,7 +40,7 @@ const recordingContext = recordingCanvas.getContext("2d");
 const MODEL_URLS = {
   pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
   hands: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
   object: "https://storage.googleapis.com/mediapipe-tasks/object_detector/efficientdet_lite0_uint8.tflite",
 };
 
@@ -86,7 +84,6 @@ let handLandmarker = null;
 let faceLandmarker = null;
 let objectDetector = null;
 let lastObjectInferenceAt = 0;
-let lastAiRuntimeErrorAt = 0;
 let lastAi = { poses: [], hands: [], faces: [] };
 let lastVisibleAi = { poses: [], hands: [], faces: [] };
 let lastStaticAi = { poses: [], hands: [], faces: [] };
@@ -168,101 +165,61 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
-  const loaded = [];
-  const failed = [];
-
   try {
     setStatus("Cargando IA", "idle");
-    motionStats.textContent = "Cargando IA. La camara puede abrir aunque la IA falle.";
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
 
-    const mediapipe = await import(MEDIAPIPE_BUNDLE_URL);
-    ({ FaceLandmarker, FilesetResolver, HandLandmarker, ObjectDetector, PoseLandmarker } = mediapipe);
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numPoses: 2,
+      minPoseDetectionConfidence: 0.35,
+      minPosePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
 
-    const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
 
-    try {
-      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "CPU" },
-        runningMode: "VIDEO",
-        numPoses: 2,
-        minPoseDetectionConfidence: 0.35,
-        minPosePresenceConfidence: 0.35,
-        minTrackingConfidence: 0.35,
-      });
-      loaded.push("cuerpo");
-    } catch (error) {
-      console.warn("Pose no disponible", error);
-      poseLandmarker = null;
-      failed.push("cuerpo");
-    }
-
-    try {
-      handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "CPU" },
-        runningMode: "VIDEO",
-        numHands: 2,
-        minHandDetectionConfidence: 0.35,
-        minHandPresenceConfidence: 0.35,
-        minTrackingConfidence: 0.35,
-      });
-      loaded.push("manos");
-    } catch (error) {
-      console.warn("Manos no disponible", error);
-      handLandmarker = null;
-      failed.push("manos");
-    }
-
-    try {
-      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "CPU" },
-        runningMode: "VIDEO",
-        numFaces: 1,
-        minFaceDetectionConfidence: 0.4,
-        minFacePresenceConfidence: 0.4,
-        minTrackingConfidence: 0.4,
-      });
-      loaded.push("cara");
-    } catch (error) {
-      console.warn("Cara no disponible", error);
-      faceLandmarker = null;
-      failed.push("cara");
-    }
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+      runningMode: "VIDEO",
+      numFaces: 1,
+      minFaceDetectionConfidence: 0.4,
+      minFacePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
+    });
 
     try {
       objectDetector = await ObjectDetector.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "CPU" },
+        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
         runningMode: "VIDEO",
         maxResults: 8,
         scoreThreshold: 0.42,
       });
-      loaded.push("objetos");
     } catch (error) {
       console.warn("Detector de objetos no disponible", error);
       objectDetector = null;
-      failed.push("objetos");
     }
 
-    visionReady = loaded.length > 0;
-
-    if (visionReady && failed.length) {
-      setStatus("IA parcial", "idle");
-      motionStats.textContent = `IA parcial: ${loaded.join(", ")} | fallaron: ${failed.join(", ")}`;
-    } else if (visionReady) {
-      setStatus("IA lista", "idle");
-      motionStats.textContent = "IA lista | abre la camara";
-    } else {
-      setStatus("IA no cargo", "idle");
-      motionStats.textContent = "IA no cargo. La camara puede funcionar sin esqueleto.";
-    }
+    visionReady = true;
+    setStatus("IA lista", "idle");
+    motionStats.textContent = "IA lista | abre la camara";
   } catch (error) {
-    console.error("No se pudo cargar MediaPipe", error);
-    visionReady = false;
+    console.error(error);
     setStatus("IA no cargo", "idle");
-    motionStats.textContent = "IA no cargo. La camara puede funcionar sin esqueleto. Revisa internet o CDN.";
-  } finally {
-    updateDiagnostics();
+    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
   }
 }
+
 async function startCamera() {
   stopCamera();
 
@@ -272,23 +229,11 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
     video.srcObject = stream;
     await video.play();
-    await waitForVideoReady();
-
-    startCameraButton.textContent = "Reiniciar";
-    recordButton.disabled = typeof MediaRecorder === "undefined";
-    switchCameraButton.disabled = false;
-    cameraSelect.disabled = false;
-
-    try {
-      await refreshCameraList();
-    } catch (error) {
-      console.warn("No se pudo listar camaras, pero la camara activa sigue funcionando", error);
-    }
-
-    resizeOverlayIfNeeded();
+    await refreshCameraList();
+    resizeOverlay();
     previousFrame = null;
     backgroundBrightness = null;
     trailPoints = [];
@@ -298,6 +243,10 @@ async function startCamera() {
     previousAiForMotion = { poses: [], hands: [], faces: [] };
     lastObjects = [];
     lastEventSummary = { type: "none", label: "Sin evento", alert: false };
+    startCameraButton.textContent = "Reiniciar";
+    recordButton.disabled = false;
+    switchCameraButton.disabled = false;
+    cameraSelect.disabled = false;
     setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
     detectLoop();
   } catch (error) {
@@ -317,17 +266,6 @@ function stopCamera() {
     stream.getTracks().forEach((track) => track.stop());
     stream = null;
   }
-}
-
-function waitForVideoReady() {
-  if (video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const finish = () => resolve();
-    video.addEventListener("loadedmetadata", finish, { once: true });
-    video.addEventListener("canplay", finish, { once: true });
-    setTimeout(resolve, 1200);
-  });
 }
 
 async function refreshCameraList() {
@@ -373,17 +311,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
+    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
+    if (mode === "holistic" || mode === "poseHands") {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (faceLandmarker && mode === "holistic") {
+    if (mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -396,11 +334,7 @@ function runAiDetection(now) {
 
     lastAi = { poses, hands, faces };
   } catch (error) {
-    console.warn("Error ejecutando IA", error);
-    if (performance.now() - lastAiRuntimeErrorAt > 2500) {
-      lastAiRuntimeErrorAt = performance.now();
-      motionStats.textContent = "IA cargada, pero no pudo analizar este frame. Prueba buena luz y aleja la camara.";
-    }
+    console.warn(error);
   }
 }
 
@@ -420,7 +354,7 @@ function updateMotionDetection() {
 }
 
 function drawScene() {
-  resizeOverlayIfNeeded();
+  resizeOverlay();
   const rect = overlay.getBoundingClientRect();
   overlayContext.clearRect(0, 0, rect.width, rect.height);
 
@@ -1053,19 +987,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function resizeOverlayIfNeeded() {
+function resizeOverlay() {
   const rect = video.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
-  const nextWidth = Math.max(1, Math.round(rect.width * pixelRatio));
-  const nextHeight = Math.max(1, Math.round(rect.height * pixelRatio));
-
-  if (overlay.width !== nextWidth || overlay.height !== nextHeight) {
-    overlay.width = nextWidth;
-    overlay.height = nextHeight;
-  }
-
+  overlay.width = Math.round(rect.width * pixelRatio);
+  overlay.height = Math.round(rect.height * pixelRatio);
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
+
 function toggleRecording() {
   if (!stream) return;
   if (isRecording) {
@@ -1388,16 +1317,8 @@ clearListButton.addEventListener("click", async () => {
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
   updateDiagnostics();
 });
-window.addEventListener("resize", resizeOverlayIfNeeded);
+window.addEventListener("resize", resizeOverlay);
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations?.().then((registrations) => {
-    registrations.forEach((registration) => registration.unregister());
-  }).catch(console.warn);
-}
-
-if ("caches" in window) {
-  caches.keys().then((keys) => {
-    keys.filter((key) => key.startsWith("detectorcam")).forEach((key) => caches.delete(key));
-  }).catch(console.warn);
+  navigator.serviceWorker.register("./service-worker.js").catch(console.error);
 }

@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
-  echo No se encontro Node.js. Instala Node.js o ejecuta desde una terminal donde node funcione.
+  echo No se encontro Node.js. Instala Node.js o abre una terminal donde node funcione.
   pause
   exit /b 1
 )
