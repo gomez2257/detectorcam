@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v5-ai-skeleton-delete";
+const CACHE_NAME = "detectorcam-v5-ai-skeleton-history";
 const ASSETS = [
   "./",
   "./index.html",

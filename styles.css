@@ -311,3 +311,42 @@ h2 {
   min-height: 42px;
   padding: 8px 10px;
 }
+
+.diagnostics {
+  padding: 14px;
+  background: #101820;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostic-item {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.diagnostic-item span {
+  display: block;
+  color: #a9b5bf;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.diagnostic-item strong {
+  display: block;
+  color: #f6f7f9;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+@media (max-width: 430px) {
+  .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
+}

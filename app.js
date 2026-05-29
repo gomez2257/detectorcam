@@ -23,6 +23,10 @@ const globalFilterInput = document.querySelector("#globalFilter");
 const enhanceViewInput = document.querySelector("#enhanceView");
 const clearListButton = document.querySelector("#clearList");
 const recordingList = document.querySelector("#recordingList");
+const diagAi = document.querySelector("#diagAi");
+const diagCamera = document.querySelector("#diagCamera");
+const diagRecorder = document.querySelector("#diagRecorder");
+const diagStorage = document.querySelector("#diagStorage");
 
 const overlayContext = overlay.getContext("2d");
 const analysisCanvas = document.createElement("canvas");
@@ -85,10 +89,23 @@ const grid = {
   height: 288,
 };
 
+const DB_NAME = "detectorcam-db";
+const DB_VERSION = 1;
+const RECORDING_STORE = "recordings";
+const MAX_STORED_RECORDINGS = 8;
+const MAX_STORED_BYTES = 180 * 1024 * 1024;
+
+let dbPromise = null;
+let storedRecordingCount = 0;
+let storedRecordingBytes = 0;
+const activeRecordingUrls = new Set();
+
 analysisCanvas.width = grid.width;
 analysisCanvas.height = grid.height;
 
 initAi();
+initRecordings();
+updateDiagnostics();
 
 async function initAi() {
   try {
@@ -615,57 +632,210 @@ async function saveRecording() {
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
   const blob = new Blob(recordedChunks, { type: mimeType });
-  const fileName = `detectorcam-${Date.now()}.${extension}`;
-  const url = URL.createObjectURL(blob);
+  const recording = {
+    blob,
+    mimeType,
+    size: blob.size,
+    createdAt: Date.now(),
+    fileName: `detectorcam-${Date.now()}.${extension}`,
+  };
+
+  try {
+    await saveRecordingToHistory(recording);
+    await purgeOldRecordings();
+    await renderStoredRecordings();
+  } catch (error) {
+    console.warn(error);
+    renderEphemeralRecording(recording);
+  }
+}
+
+async function initRecordings() {
+  try {
+    await purgeOldRecordings();
+    await renderStoredRecordings();
+  } catch (error) {
+    console.warn(error);
+    updateDiagnostics();
+  }
+}
+
+function openRecordingsDb() {
+  if (!window.indexedDB) return Promise.reject(new Error("IndexedDB no disponible"));
+  if (dbPromise) return dbPromise;
+
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(RECORDING_STORE)) {
+        const store = db.createObjectStore(RECORDING_STORE, { keyPath: "id", autoIncrement: true });
+        store.createIndex("createdAt", "createdAt");
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+  return dbPromise;
+}
+
+function requestToPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getStoredRecordings() {
+  const db = await openRecordingsDb();
+  const tx = db.transaction(RECORDING_STORE, "readonly");
+  const records = await requestToPromise(tx.objectStore(RECORDING_STORE).getAll());
+  return records.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+async function saveRecordingToHistory(recording) {
+  const db = await openRecordingsDb();
+  const tx = db.transaction(RECORDING_STORE, "readwrite");
+  await requestToPromise(tx.objectStore(RECORDING_STORE).add(recording));
+}
+
+async function deleteStoredRecording(id) {
+  const db = await openRecordingsDb();
+  const tx = db.transaction(RECORDING_STORE, "readwrite");
+  await requestToPromise(tx.objectStore(RECORDING_STORE).delete(id));
+}
+
+async function clearStoredRecordings() {
+  const db = await openRecordingsDb();
+  const tx = db.transaction(RECORDING_STORE, "readwrite");
+  await requestToPromise(tx.objectStore(RECORDING_STORE).clear());
+}
+
+async function purgeOldRecordings() {
+  let records = await getStoredRecordings();
+  for (const record of records.slice(MAX_STORED_RECORDINGS)) {
+    await deleteStoredRecording(record.id);
+  }
+
+  records = await getStoredRecordings();
+  let totalBytes = records.reduce((total, record) => total + (record.size || record.blob?.size || 0), 0);
+
+  while (totalBytes > MAX_STORED_BYTES && records.length > 1) {
+    const oldest = records.pop();
+    totalBytes -= oldest.size || oldest.blob?.size || 0;
+    await deleteStoredRecording(oldest.id);
+  }
+}
+
+function revokeActiveRecordingUrls() {
+  activeRecordingUrls.forEach((url) => URL.revokeObjectURL(url));
+  activeRecordingUrls.clear();
+}
+
+async function renderStoredRecordings() {
+  revokeActiveRecordingUrls();
+  const records = await getStoredRecordings();
+  storedRecordingCount = records.length;
+  storedRecordingBytes = records.reduce((total, record) => total + (record.size || record.blob?.size || 0), 0);
+
+  recordingList.innerHTML = "";
+  if (!records.length) {
+    recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+    updateDiagnostics();
+    return;
+  }
+
+  records.forEach((record) => addRecordingItem(record));
+  updateDiagnostics();
+}
+
+function addRecordingItem(recording) {
+  const url = URL.createObjectURL(recording.blob);
+  activeRecordingUrls.add(url);
+  const file = new File([recording.blob], recording.fileName, { type: recording.mimeType });
+  const canShare = navigator.canShare?.({ files: [file] });
   const item = document.createElement("article");
   item.className = "recording-item";
-
-  const file = new File([blob], fileName, { type: mimeType });
-  const canShare = navigator.canShare?.({ files: [file] });
   item.innerHTML = `
-    <strong>${new Date().toLocaleString()}</strong>
+    <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
     <video src="${url}" controls playsinline></video>
     <div class="recording-actions">
-      <a href="${url}" download="${fileName}">Descargar video</a>
+      <a href="${url}" download="${recording.fileName}">Descargar video</a>
       <button type="button" class="ghost save-video">Guardar / compartir</button>
       <button type="button" class="danger delete-video">Eliminar</button>
     </div>
   `;
 
-  const deleteButton = item.querySelector(".delete-video");
-
   item.querySelector(".save-video").addEventListener("click", async () => {
     if (canShare) {
       await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
     } else {
-      const link = item.querySelector("a");
-      link.click();
+      item.querySelector("a").click();
     }
   });
 
-  deleteButton.addEventListener("click", () => {
+  item.querySelector(".delete-video").addEventListener("click", async () => {
+    if (recording.id !== undefined) await deleteStoredRecording(recording.id);
     URL.revokeObjectURL(url);
+    activeRecordingUrls.delete(url);
+    item.remove();
+    await renderStoredRecordings();
+  });
+
+  recordingList.append(item);
+}
+
+function renderEphemeralRecording(recording) {
+  const url = URL.createObjectURL(recording.blob);
+  activeRecordingUrls.add(url);
+  const item = document.createElement("article");
+  item.className = "recording-item";
+  item.innerHTML = `
+    <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
+    <video src="${url}" controls playsinline></video>
+    <div class="recording-actions">
+      <a href="${url}" download="${recording.fileName}">Descargar video</a>
+      <button type="button" class="danger delete-video">Eliminar</button>
+    </div>
+  `;
+  item.querySelector(".delete-video").addEventListener("click", () => {
+    URL.revokeObjectURL(url);
+    activeRecordingUrls.delete(url);
     item.remove();
     if (!recordingList.querySelector(".recording-item")) {
       recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     }
   });
-
   recordingList.querySelector(".empty")?.remove();
   recordingList.prepend(item);
+  updateDiagnostics();
+}
 
-  if (canShare) {
-    try {
-      await navigator.share({ files: [file], title: "DetectorCam", text: "Video DetectorCam" });
-    } catch {
-      // The user can still save it with the button.
-    }
+function formatBytes(bytes) {
+  if (!bytes) return "0 MB";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateDiagnostics() {
+  if (diagAi) diagAi.textContent = visionReady ? "IA cargada" : "IA cargando/error";
+  if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
+  if (diagRecorder) {
+    diagRecorder.textContent = typeof MediaRecorder === "undefined"
+      ? "No soportado"
+      : isRecording
+        ? "Grabando"
+        : "Grabador listo";
+  }
+  if (diagStorage) {
+    diagStorage.textContent = `${storedRecordingCount}/${MAX_STORED_RECORDINGS} videos | ${formatBytes(storedRecordingBytes)}`;
   }
 }
 
 function setStatus(text, mode) {
   statusLabel.textContent = text;
   statusLabel.className = `status ${mode}`;
+  updateDiagnostics();
 }
 
 async function switchCamera() {
@@ -679,8 +849,17 @@ recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
 cameraSelect.addEventListener("change", startCamera);
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
-clearListButton.addEventListener("click", () => {
+clearListButton.addEventListener("click", async () => {
+  try {
+    await clearStoredRecordings();
+  } catch (error) {
+    console.warn(error);
+  }
+  revokeActiveRecordingUrls();
+  storedRecordingCount = 0;
+  storedRecordingBytes = 0;
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+  updateDiagnostics();
 });
 window.addEventListener("resize", resizeOverlay);
 
