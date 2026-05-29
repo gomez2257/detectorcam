@@ -2,8 +2,9 @@ import {
   FaceLandmarker,
   FilesetResolver,
   HandLandmarker,
+  ObjectDetector,
   PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -28,6 +29,7 @@ const diagAi = document.querySelector("#diagAi");
 const diagCamera = document.querySelector("#diagCamera");
 const diagRecorder = document.querySelector("#diagRecorder");
 const diagStorage = document.querySelector("#diagStorage");
+const diagEvent = document.querySelector("#diagEvent");
 
 const overlayContext = overlay.getContext("2d");
 const analysisCanvas = document.createElement("canvas");
@@ -39,6 +41,7 @@ const MODEL_URLS = {
   pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
   hands: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
   face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+  object: "https://storage.googleapis.com/mediapipe-tasks/object_detector/efficientdet_lite0_uint8.tflite",
 };
 
 const POSE_CONNECTIONS = [
@@ -65,7 +68,6 @@ const FACE_CONNECTIONS = [
 
 let stream = null;
 let recordingStream = null;
-let recordingAudioStream = null;
 let mediaRecorder = null;
 let recordedChunks = [];
 let previousFrame = null;
@@ -80,11 +82,16 @@ let visionReady = false;
 let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
+let objectDetector = null;
+let lastObjectInferenceAt = 0;
 let lastAi = { poses: [], hands: [], faces: [] };
 let lastVisibleAi = { poses: [], hands: [], faces: [] };
 let lastStaticAi = { poses: [], hands: [], faces: [] };
 let previousAiForMotion = { poses: [], hands: [], faces: [] };
 let lastMotion = { boxes: [], points: [], strength: 0, filtered: false };
+let lastObjects = [];
+let lastEventSummary = { type: "none", label: "Sin evento", alert: false };
+let recordingEventTypes = new Set();
 let trailPoints = [];
 
 const grid = {
@@ -105,6 +112,51 @@ let storedRecordingCount = 0;
 let storedRecordingBytes = 0;
 const activeRecordingUrls = new Set();
 
+const ANIMAL_LABELS = new Set([
+  "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"
+]);
+
+const OBJECT_LABELS_ES = {
+  person: "persona",
+  bird: "ave",
+  cat: "gato",
+  dog: "perro",
+  horse: "caballo",
+  sheep: "oveja",
+  cow: "vaca",
+  elephant: "elefante",
+  bear: "oso",
+  zebra: "cebra",
+  giraffe: "jirafa",
+  car: "carro",
+  motorcycle: "moto",
+  bicycle: "bicicleta",
+  bus: "bus",
+  truck: "camion",
+  chair: "silla",
+  couch: "sofa",
+  bed: "cama",
+  backpack: "morral",
+  handbag: "bolso",
+  suitcase: "maleta",
+  bottle: "botella",
+  cup: "vaso",
+  cell_phone: "celular",
+  laptop: "portatil",
+  tv: "televisor",
+  book: "libro",
+};
+
+const EVENT_LABELS = {
+  person: "Persona en movimiento",
+  animal: "Animal en movimiento",
+  object: "Objeto en movimiento",
+  anomaly: "Movimiento no identificado",
+  quietPerson: "Persona quieta",
+  quietObject: "Objeto/forma quieta",
+  none: "Sin evento",
+};
+
 analysisCanvas.width = grid.width;
 analysisCanvas.height = grid.height;
 
@@ -116,7 +168,7 @@ async function initAi() {
   try {
     setStatus("Cargando IA", "idle");
     const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
     );
 
     poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -146,22 +198,29 @@ async function initAi() {
       minTrackingConfidence: 0.4,
     });
 
+    try {
+      objectDetector = await ObjectDetector.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
+        runningMode: "VIDEO",
+        maxResults: 8,
+        scoreThreshold: 0.42,
+      });
+    } catch (error) {
+      console.warn("Detector de objetos no disponible", error);
+      objectDetector = null;
+    }
+
     visionReady = true;
     setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la cámara";
+    motionStats.textContent = "IA lista | abre la camara";
   } catch (error) {
     console.error(error);
-    setStatus("IA no cargó", "idle");
-    motionStats.textContent = "IA no cargó. Revisa internet y recarga.";
+    setStatus("IA no cargo", "idle");
+    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
   }
 }
 
 async function startCamera() {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de reiniciar", "recording");
-    return;
-  }
-
   stopCamera();
 
   try {
@@ -170,7 +229,7 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -179,16 +238,21 @@ async function startCamera() {
     backgroundBrightness = null;
     trailPoints = [];
     lastAi = { poses: [], hands: [], faces: [] };
+    lastVisibleAi = { poses: [], hands: [], faces: [] };
+    lastStaticAi = { poses: [], hands: [], faces: [] };
+    previousAiForMotion = { poses: [], hands: [], faces: [] };
+    lastObjects = [];
+    lastEventSummary = { type: "none", label: "Sin evento", alert: false };
     startCameraButton.textContent = "Reiniciar";
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
     cameraSelect.disabled = false;
-    setStatus(visionReady ? "Cámara activa" : "Sin IA", "idle");
+    setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
     detectLoop();
   } catch (error) {
     console.error(error);
     setStatus("Sin permiso", "idle");
-    alert("No se pudo abrir la cámara. Revisa permisos del navegador.");
+    alert("No se pudo abrir la camara. Revisa permisos del navegador.");
   }
 }
 
@@ -211,11 +275,11 @@ async function refreshCameraList() {
   const activeTrack = stream?.getVideoTracks()[0];
   const activeDeviceId = activeTrack?.getSettings().deviceId || cameraSelect.value;
 
-  cameraSelect.innerHTML = '<option value="">Cámara automática</option>';
+  cameraSelect.innerHTML = '<option value="">Camara automatica</option>';
   cameras.forEach((camera, index) => {
     const option = document.createElement("option");
     option.value = camera.deviceId;
-    option.textContent = camera.label || `Cámara ${index + 1}`;
+    option.textContent = camera.label || `Camara ${index + 1}`;
     option.selected = camera.deviceId === activeDeviceId;
     cameraSelect.append(option);
   });
@@ -262,6 +326,12 @@ function runAiDetection(now) {
       faces.push(...(faceResult.faceLandmarks || []));
     }
 
+    if (objectDetector && now - lastObjectInferenceAt > 650) {
+      const objectResult = objectDetector.detectForVideo(video, now);
+      lastObjects = normalizeObjectDetections(objectResult.detections || []);
+      lastObjectInferenceAt = now;
+    }
+
     lastAi = { poses, hands, faces };
   } catch (error) {
     console.warn(error);
@@ -299,8 +369,11 @@ function drawScene() {
   }
 
   if (mode !== "motion" && visual !== "trail" && visual !== "heat") {
+    drawObjectOverlay(overlayContext, lastObjects, rect.width, rect.height);
     drawAiOverlay(overlayContext, lastStaticAi, rect.width, rect.height, visual, "static");
     drawAiOverlay(overlayContext, lastVisibleAi, rect.width, rect.height, visual, "active");
+  } else if (mode === "motion") {
+    drawObjectOverlay(overlayContext, lastObjects, rect.width, rect.height);
   }
 }
 
@@ -413,31 +486,248 @@ function getLandmarkShift(landmarks, previous, type) {
   return sample.reduce((sum, value) => sum + value, 0) / sample.length;
 }
 
+function normalizeObjectDetections(detections) {
+  const frameWidth = video.videoWidth || grid.width;
+  const frameHeight = video.videoHeight || grid.height;
+
+  return detections
+    .map((detection) => {
+      const categories = [...(detection.categories || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+      const category = categories[0] || {};
+      const rawLabel = String(category.categoryName || category.displayName || "object").toLowerCase().replace(/ /g, "_");
+      const box = normalizeBoundingBox(detection.boundingBox, frameWidth, frameHeight);
+      if (!box) return null;
+
+      const score = category.score || 0;
+      const kind = rawLabel === "person" ? "person" : ANIMAL_LABELS.has(rawLabel) ? "animal" : "object";
+      const motionScore = getMotionScoreInsideNormalizedBox(box, kind === "person" ? 0.04 : 0.03);
+      const movingThreshold = kind === "person" ? 1.8 : kind === "animal" ? 0.9 : 1.15;
+
+      return {
+        label: rawLabel,
+        labelEs: translateObjectLabel(rawLabel),
+        score,
+        kind,
+        box,
+        moving: motionScore >= movingThreshold,
+        motionScore,
+      };
+    })
+    .filter(Boolean)
+    .filter((object) => object.score >= 0.42);
+}
+
+function normalizeBoundingBox(box, frameWidth, frameHeight) {
+  if (!box) return null;
+  const originX = box.originX ?? box.x ?? 0;
+  const originY = box.originY ?? box.y ?? 0;
+  const rawWidth = box.width ?? 0;
+  const rawHeight = box.height ?? 0;
+  if (rawWidth <= 0 || rawHeight <= 0) return null;
+
+  const normalized = rawWidth <= 1 && rawHeight <= 1;
+  const x = normalized ? originX : originX / frameWidth;
+  const y = normalized ? originY : originY / frameHeight;
+  const width = normalized ? rawWidth : rawWidth / frameWidth;
+  const height = normalized ? rawHeight : rawHeight / frameHeight;
+
+  return {
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1),
+    width: clamp(width, 0, 1),
+    height: clamp(height, 0, 1),
+  };
+}
+
+function translateObjectLabel(label) {
+  return OBJECT_LABELS_ES[label] || label.replace(/_/g, " ");
+}
+
+function getMotionScoreInsideNormalizedBox(box, padding = 0.03) {
+  if (!lastMotion.points.length) return 0;
+  const minX = Math.max(0, box.x - padding);
+  const maxX = Math.min(1, box.x + box.width + padding);
+  const minY = Math.max(0, box.y - padding);
+  const maxY = Math.min(1, box.y + box.height + padding);
+
+  return lastMotion.points.reduce((score, point) => {
+    const x = point.x / grid.width;
+    const y = point.y / grid.height;
+    if (x < minX || x > maxX || y < minY || y > maxY) return score;
+    return score + point.strength;
+  }, 0);
+}
+
+function isLikelyHumanPose(pose) {
+  if (!pose?.length) return false;
+  const visible = (index, min = 0.24) => isVisible(pose[index], min);
+  const visibleCount = pose.filter((landmark) => isVisible(landmark, 0.24)).length;
+  const headCount = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter((index) => visible(index, 0.22)).length;
+  const armCount = [13, 14, 15, 16].filter((index) => visible(index, 0.22)).length;
+  const legCount = [25, 26, 27, 28, 29, 30, 31, 32].filter((index) => visible(index, 0.22)).length;
+  const hasShoulders = visible(11, 0.24) && visible(12, 0.24);
+  const hasHips = visible(23, 0.22) && visible(24, 0.22);
+
+  if (visibleCount < 8 || !hasShoulders) return false;
+
+  const shoulderWidth = Math.abs(pose[11].x - pose[12].x);
+  const shoulderY = (pose[11].y + pose[12].y) / 2;
+  const hipY = hasHips ? (pose[23].y + pose[24].y) / 2 : shoulderY + 0.08;
+  const torsoHeight = Math.abs(hipY - shoulderY);
+  const hasHumanCore = hasHips || headCount >= 2 || armCount >= 2 || legCount >= 2;
+  const plausibleScale = shoulderWidth > 0.035 && shoulderWidth < 0.75 && torsoHeight > 0.035;
+
+  return hasHumanCore && plausibleScale;
+}
+
+function getDetectionSummary() {
+  const movingHumanPoses = lastVisibleAi.poses.filter(isLikelyHumanPose).length;
+  const movingPseudoPoses = lastVisibleAi.poses.length - movingHumanPoses;
+  const staticHumanPoses = lastStaticAi.poses.filter(isLikelyHumanPose).length;
+  const staticPseudoPoses = lastStaticAi.poses.length - staticHumanPoses;
+  const movingHumanParts = lastVisibleAi.hands.length + lastVisibleAi.faces.length;
+  const staticHumanParts = lastStaticAi.hands.length + lastStaticAi.faces.length;
+  const movingPeople = movingHumanPoses > 0 || movingHumanParts > 0 ? Math.max(1, movingHumanPoses) : 0;
+  const staticPeople = staticHumanPoses > 0 || staticHumanParts > 0 ? Math.max(1, staticHumanPoses) : 0;
+  const movingAnimals = lastObjects.filter((object) => object.kind === "animal" && object.moving).length;
+  const movingObjects = lastObjects.filter((object) => object.kind === "object" && object.moving).length;
+  const quietObjects = lastObjects.filter((object) => !object.moving && object.kind !== "person").length + staticPseudoPoses;
+  const hasUnclassifiedMotion = lastMotion.points.length > 0 && movingPeople === 0 && movingAnimals === 0 && movingObjects === 0;
+  const anomalies = movingPseudoPoses + (hasUnclassifiedMotion ? 1 : 0);
+
+  let type = "none";
+  if (movingPeople > 0) type = "person";
+  else if (movingAnimals > 0) type = "animal";
+  else if (movingObjects > 0) type = "object";
+  else if (anomalies > 0) type = "anomaly";
+  else if (staticPeople > 0) type = "quietPerson";
+  else if (quietObjects > 0 || lastStaticAi.poses.length > 0) type = "quietObject";
+
+  return {
+    type,
+    label: EVENT_LABELS[type] || EVENT_LABELS.none,
+    alert: ["person", "animal", "object", "anomaly"].includes(type),
+    movingPeople,
+    movingAnimals,
+    movingObjects,
+    anomalies,
+    quiet: staticPeople + quietObjects,
+    points: lastMotion.points.length,
+  };
+}
+
+function rememberRecordingEvent(summary = lastEventSummary) {
+  if (!isRecording || !summary?.type || summary.type === "none") return;
+  recordingEventTypes.add(summary.type);
+}
+
+function getPrimaryRecordingEventType() {
+  const priority = ["person", "animal", "object", "anomaly", "quietPerson", "quietObject"];
+  return priority.find((type) => recordingEventTypes.has(type)) || "none";
+}
+
+function buildRecordingEventLabel() {
+  const priority = ["person", "animal", "object", "anomaly", "quietPerson", "quietObject"];
+  const labels = priority.filter((type) => recordingEventTypes.has(type)).map((type) => EVENT_LABELS[type]);
+  return labels.length ? labels.join(" + ") : EVENT_LABELS.none;
+}
+
+function drawObjectOverlay(context, objects, width, height) {
+  if (!objects.length) return;
+  const transform = getVideoTransform(width, height);
+
+  objects.forEach((object) => {
+    if (object.kind === "person" && (lastVisibleAi.poses.length || lastStaticAi.poses.length || lastVisibleAi.faces.length)) return;
+    const style = getObjectStyle(object);
+    const rect = normalizedBoxToCanvasRect(object.box, transform);
+    if (rect.width < 16 || rect.height < 16) return;
+
+    context.save();
+    context.lineWidth = object.moving ? 3 : 2;
+    context.strokeStyle = style.color;
+    context.fillStyle = style.fill;
+    context.shadowColor = "rgba(0, 0, 0, 0.7)";
+    context.shadowBlur = 8;
+    if (!object.moving) context.setLineDash([7, 6]);
+    context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    context.setLineDash([]);
+    drawBoxLabel(context, rect, style.label, style.color);
+    context.restore();
+  });
+}
+
+function getObjectStyle(object) {
+  if (object.kind === "animal") {
+    return object.moving
+      ? { color: "#ffb02e", fill: "rgba(255, 176, 46, 0.08)", label: `Animal en movimiento: ${object.labelEs}` }
+      : { color: "rgba(103, 215, 255, 0.72)", fill: "rgba(103, 215, 255, 0.04)", label: `Animal quieto: ${object.labelEs}` };
+  }
+
+  if (object.kind === "person") {
+    return object.moving
+      ? { color: "#2cff9a", fill: "rgba(44, 255, 154, 0.08)", label: "Persona posible" }
+      : { color: "rgba(103, 215, 255, 0.72)", fill: "rgba(103, 215, 255, 0.04)", label: "Persona quieta posible" };
+  }
+
+  return object.moving
+    ? { color: "#ffd24a", fill: "rgba(255, 210, 74, 0.08)", label: `Objeto en movimiento: ${object.labelEs}` }
+    : { color: "rgba(180, 205, 220, 0.62)", fill: "rgba(180, 205, 220, 0.04)", label: `Objeto quieto: ${object.labelEs}` };
+}
+
+function normalizedBoxToCanvasRect(box, transform) {
+  return {
+    x: transform.x + box.x * transform.width,
+    y: transform.y + box.y * transform.height,
+    width: box.width * transform.width,
+    height: box.height * transform.height,
+  };
+}
+
+function drawBoxLabel(context, rect, text, color) {
+  context.save();
+  context.font = "700 13px Arial";
+  context.textBaseline = "top";
+  const paddingX = 7;
+  const paddingY = 5;
+  const labelWidth = context.measureText(text).width + paddingX * 2;
+  const labelHeight = 24;
+  const x = Math.max(6, Math.min(rect.x, context.canvas.width - labelWidth - 6));
+  const y = Math.max(6, rect.y - labelHeight - 4);
+  context.fillStyle = "rgba(5, 8, 12, 0.78)";
+  context.fillRect(x, y, labelWidth, labelHeight);
+  context.fillStyle = color;
+  context.fillText(text, x + paddingX, y + paddingY);
+  context.restore();
+}
+
 function drawAiOverlay(context, ai, width, height, visual, state = "active") {
   const transform = getVideoTransform(width, height);
   const active = state === "active";
-  const poseColor = active ? "#2cff9a" : "rgba(180, 205, 220, 0.62)";
-  const posePoint = active ? "#ffdf3d" : "rgba(180, 205, 220, 0.56)";
-  const handColor = active ? "#ff4fd8" : "rgba(180, 205, 220, 0.58)";
-  const handPoint = active ? "#ff4b4b" : "rgba(180, 205, 220, 0.52)";
-  const faceColor = active ? "#67d7ff" : "rgba(180, 205, 220, 0.5)";
 
   ai.poses.forEach((pose) => {
-    drawConnections(context, pose, POSE_CONNECTIONS, transform, poseColor, active ? 4 : 2, 0.35, !active);
-    drawLandmarkPoints(context, pose, transform, posePoint, active ? "#ffffff" : "rgba(255, 255, 255, 0.35)", active ? 5 : 3, 0.35);
-    if (!active) drawLandmarkLabel(context, pose, transform, "Forma quieta", faceColor);
+    const likelyHuman = isLikelyHumanPose(pose);
+    const poseColor = active ? (likelyHuman ? "#2cff9a" : "#b665ff") : likelyHuman ? "rgba(103, 215, 255, 0.72)" : "rgba(180, 205, 220, 0.62)";
+    const posePoint = active ? (likelyHuman ? "#ffdf3d" : "#ffe66d") : likelyHuman ? "rgba(103, 215, 255, 0.72)" : "rgba(180, 205, 220, 0.56)";
+    const label = active ? (likelyHuman ? "Persona en movimiento" : "Movimiento no identificado") : likelyHuman ? "Persona quieta" : "Forma quieta";
+    drawConnections(context, pose, POSE_CONNECTIONS, transform, poseColor, active && likelyHuman ? 4 : 2, 0.35, !active || !likelyHuman);
+    drawLandmarkPoints(context, pose, transform, posePoint, active ? "#ffffff" : "rgba(255, 255, 255, 0.35)", active && likelyHuman ? 5 : 3, 0.35);
+    drawLandmarkLabel(context, pose, transform, label, poseColor);
   });
 
   ai.hands.forEach((hand) => {
+    const handColor = active ? "#2cff9a" : "rgba(103, 215, 255, 0.68)";
+    const handPoint = active ? "#ffdf3d" : "rgba(103, 215, 255, 0.62)";
     drawConnections(context, hand, HAND_CONNECTIONS, transform, handColor, active ? 3 : 2, 0.25, !active);
     drawLandmarkPoints(context, hand, transform, handPoint, active ? "#ffffff" : "rgba(255, 255, 255, 0.35)", active ? 4 : 3, 0.25);
-    if (!active) drawLandmarkLabel(context, hand, transform, "Mano/forma quieta", faceColor);
+    drawLandmarkLabel(context, hand, transform, active ? "Mano en movimiento" : "Mano quieta", handColor);
   });
 
   ai.faces.forEach((face) => {
+    const faceColor = active ? "#2cff9a" : "rgba(103, 215, 255, 0.6)";
     drawConnections(context, face, FACE_CONNECTIONS, transform, faceColor, active ? 2 : 1.4, 0.2, !active);
     if (visual === "points" || !active) drawLandmarkPoints(context, face, transform, faceColor, "rgba(255, 255, 255, 0.45)", active ? 2.2 : 1.5, 0.2, active ? 2 : 10);
-    if (!active) drawLandmarkLabel(context, face, transform, "Cara/forma quieta", faceColor);
+    drawLandmarkLabel(context, face, transform, active ? "Rostro en movimiento" : "Rostro quieto", faceColor);
   });
 }
 
@@ -454,7 +744,6 @@ function drawLandmarkLabel(context, landmarks, transform, text, color) {
   context.fillText(text, Math.max(8, x), Math.max(24, y - 8));
   context.restore();
 }
-
 function drawConnections(context, landmarks, connections, transform, color, lineWidth, minVisibility, dashed = false) {
   context.save();
   context.lineWidth = lineWidth;
@@ -522,37 +811,31 @@ function toCanvasPoint(landmark, transform) {
 }
 
 function updateStatus() {
-  const movingHumanCount = lastVisibleAi.poses.length;
-  const movingHandCount = lastVisibleAi.hands.length;
-  const movingFaceCount = lastVisibleAi.faces.length;
-  const staticCount = lastStaticAi.poses.length + lastStaticAi.hands.length + lastStaticAi.faces.length;
-  const motionCount = lastMotion.points.length;
-  const hasMovingAi = movingHumanCount + movingHandCount + movingFaceCount > 0;
-  const hasMotion = motionCount > 0;
-  const now = Date.now();
+  const summary = getDetectionSummary();
+  lastEventSummary = summary;
+  rememberRecordingEvent(summary);
 
-  motionStats.textContent = `Mov: ${movingHumanCount}/${movingHandCount}/${movingFaceCount} | Quietas: ${staticCount} | Puntos: ${motionCount}`;
+  motionStats.textContent = `Per: ${summary.movingPeople} | Ani: ${summary.movingAnimals} | Obj: ${summary.movingObjects} | Anom: ${summary.anomalies} | Quietos: ${summary.quiet} | Puntos: ${summary.points}`;
 
-  if (hasMovingAi || (aiModeSelect.value === "motion" && hasMotion)) {
-    lastMotionAt = now;
-    motionBanner.textContent = hasMovingAi ? "Movimiento con esqueleto" : "Cambio detectado";
-    motionBanner.classList.add("visible");
-    setStatus(isRecording ? "Grabando" : hasMovingAi ? "IA en movimiento" : "Cambio", isRecording ? "recording" : "motion");
+  if (summary.alert) {
+    lastMotionAt = Date.now();
+    motionBanner.textContent = summary.label;
+    motionBanner.className = `motion-banner visible ${summary.type}`;
+    setStatus(isRecording ? "Grabando" : summary.label, isRecording ? "recording" : "motion");
     return;
   }
 
-  if (staticCount > 0) {
-    motionBanner.classList.remove("visible");
-    setStatus(isRecording ? "Grabando" : "Forma quieta", isRecording ? "recording" : "idle");
+  motionBanner.className = "motion-banner";
+
+  if (summary.type === "quietPerson" || summary.type === "quietObject") {
+    setStatus(isRecording ? "Grabando" : summary.label, isRecording ? "recording" : "idle");
     return;
   }
 
-  if (now - lastMotionAt > 700) {
-    motionBanner.classList.remove("visible");
-    setStatus(isRecording ? "Grabando" : "Cámara activa", isRecording ? "recording" : "idle");
+  if (Date.now() - lastMotionAt > 700) {
+    setStatus(isRecording ? "Grabando" : "Camara activa", isRecording ? "recording" : "idle");
   }
 }
-
 function buildBrightnessFrame(frame) {
   const values = new Float32Array(grid.width * grid.height);
   for (let i = 0, pixel = 0; i < frame.data.length; i += 4, pixel += 1) values[pixel] = brightness(frame.data, i);
@@ -712,45 +995,31 @@ function resizeOverlay() {
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
 
-async function toggleRecording() {
+function toggleRecording() {
   if (!stream) return;
-
   if (isRecording) {
-    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    mediaRecorder.stop();
     return;
   }
 
-  if (typeof MediaRecorder === "undefined") {
-    alert("Este navegador no soporta grabación con MediaRecorder.");
-    return;
-  }
-
-  try {
-    recordedChunks = [];
-    recordingStream = await createRecordingStream();
-    const mimeType = getSupportedMimeType();
-    mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) recordedChunks.push(event.data);
-    };
-    mediaRecorder.onstop = saveRecording;
-    mediaRecorder.start();
-    isRecording = true;
-    recordButton.textContent = "Detener";
-    recordButton.classList.add("primary");
-    startCameraButton.disabled = true;
-    switchCameraButton.disabled = true;
-    cameraSelect.disabled = true;
-    setStatus("Grabando", "recording");
-  } catch (error) {
-    console.error(error);
-    cleanupRecordingTracks();
-    setStatus("Error al grabar", "idle");
-    alert("No se pudo iniciar la grabación en este navegador.");
-  }
+  recordedChunks = [];
+  recordingEventTypes = new Set();
+  rememberRecordingEvent(getDetectionSummary());
+  recordingStream = createRecordingStream();
+  const mimeType = getSupportedMimeType();
+  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size > 0) recordedChunks.push(event.data);
+  };
+  mediaRecorder.onstop = saveRecording;
+  mediaRecorder.start();
+  isRecording = true;
+  recordButton.textContent = "Detener";
+  recordButton.classList.add("primary");
+  setStatus("Grabando", "recording");
 }
 
-async function createRecordingStream() {
+function createRecordingStream() {
   const width = video.videoWidth || 1280;
   const height = video.videoHeight || 720;
   recordingCanvas.width = width;
@@ -764,6 +1033,7 @@ async function createRecordingStream() {
       if (aiModeSelect.value === "motion" || visualModeSelect.value === "trail" || visualModeSelect.value === "heat") {
         drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
       } else {
+        drawObjectOverlay(recordingContext, lastObjects, width, height);
         drawAiOverlay(recordingContext, lastStaticAi, width, height, visualModeSelect.value, "static");
         drawAiOverlay(recordingContext, lastVisibleAi, width, height, visualModeSelect.value, "active");
       }
@@ -773,24 +1043,8 @@ async function createRecordingStream() {
 
   draw();
   const canvasStream = recordingCanvas.captureStream(30);
-
-  try {
-    recordingAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    recordingAudioStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
-  } catch (error) {
-    console.info("Grabacion sin audio:", error);
-  }
-
+  stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   return canvasStream;
-}
-
-function cleanupRecordingTracks() {
-  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
-  recordingAnimationId = null;
-  if (recordingStream) recordingStream.getTracks().forEach((track) => track.stop());
-  if (recordingAudioStream) recordingAudioStream.getTracks().forEach((track) => track.stop());
-  recordingStream = null;
-  recordingAudioStream = null;
 }
 
 function getSupportedMimeType() {
@@ -805,19 +1059,14 @@ function getSupportedMimeType() {
 }
 
 async function saveRecording() {
-  cleanupRecordingTracks();
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  recordingAnimationId = null;
+  if (recordingStream) recordingStream.getVideoTracks().forEach((track) => track.stop());
+  recordingStream = null;
   isRecording = false;
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
-  startCameraButton.disabled = false;
-  switchCameraButton.disabled = !stream;
-  cameraSelect.disabled = !stream;
-  setStatus(stream ? "Cámara activa" : "Cámara inactiva", "idle");
-
-  if (!recordedChunks.length) {
-    updateDiagnostics();
-    return;
-  }
+  setStatus("Camara activa", "idle");
 
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -828,6 +1077,8 @@ async function saveRecording() {
     size: blob.size,
     createdAt: Date.now(),
     fileName: `detectorcam-${Date.now()}.${extension}`,
+    eventType: getPrimaryRecordingEventType(),
+    eventLabel: buildRecordingEventLabel(),
   };
 
   try {
@@ -931,7 +1182,7 @@ async function renderStoredRecordings() {
 
   recordingList.innerHTML = "";
   if (!records.length) {
-    recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
+    recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     updateDiagnostics();
     return;
   }
@@ -948,7 +1199,10 @@ function addRecordingItem(recording) {
   const item = document.createElement("article");
   item.className = "recording-item";
   item.innerHTML = `
-    <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
+    <div class="recording-meta">
+      <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
+      <span class="event-tag ${recording.eventType || "none"}">${escapeHtml(recording.eventLabel || EVENT_LABELS.none)}</span>
+    </div>
     <video src="${url}" controls playsinline></video>
     <div class="recording-actions">
       <a href="${url}" download="${recording.fileName}">Descargar video</a>
@@ -982,7 +1236,10 @@ function renderEphemeralRecording(recording) {
   const item = document.createElement("article");
   item.className = "recording-item";
   item.innerHTML = `
-    <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
+    <div class="recording-meta">
+      <strong>${new Date(recording.createdAt).toLocaleString()}</strong>
+      <span class="event-tag ${recording.eventType || "none"}">${escapeHtml(recording.eventLabel || EVENT_LABELS.none)}</span>
+    </div>
     <video src="${url}" controls playsinline></video>
     <div class="recording-actions">
       <a href="${url}" download="${recording.fileName}">Descargar video</a>
@@ -994,12 +1251,16 @@ function renderEphemeralRecording(recording) {
     activeRecordingUrls.delete(url);
     item.remove();
     if (!recordingList.querySelector(".recording-item")) {
-      recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
+      recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     }
   });
   recordingList.querySelector(".empty")?.remove();
   recordingList.prepend(item);
   updateDiagnostics();
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[char]));
 }
 
 function formatBytes(bytes) {
@@ -1008,8 +1269,8 @@ function formatBytes(bytes) {
 }
 
 function updateDiagnostics() {
-  if (diagAi) diagAi.textContent = visionReady ? "IA cargada" : "IA cargando/error";
-  if (diagCamera) diagCamera.textContent = stream ? "Cámara activa" : "Cámara inactiva";
+  if (diagAi) diagAi.textContent = visionReady ? (objectDetector ? "IA + objetos" : "IA cargada") : "IA cargando/error";
+  if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
   if (diagRecorder) {
     diagRecorder.textContent = typeof MediaRecorder === "undefined"
       ? "No soportado"
@@ -1020,6 +1281,7 @@ function updateDiagnostics() {
   if (diagStorage) {
     diagStorage.textContent = `${storedRecordingCount}/${MAX_STORED_RECORDINGS} videos | ${formatBytes(storedRecordingBytes)}`;
   }
+  if (diagEvent) diagEvent.textContent = lastEventSummary.label || EVENT_LABELS.none;
 }
 
 function setStatus(text, mode) {
@@ -1029,10 +1291,6 @@ function setStatus(text, mode) {
 }
 
 async function switchCamera() {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de cambiar cámara", "recording");
-    return;
-  }
   cameraSelect.value = "";
   facingMode = facingMode === "environment" ? "user" : "environment";
   await startCamera();
@@ -1041,13 +1299,7 @@ async function switchCamera() {
 startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
-cameraSelect.addEventListener("change", () => {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de cambiar cámara", "recording");
-    return;
-  }
-  startCamera();
-});
+cameraSelect.addEventListener("change", startCamera);
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
 motionGateInput?.addEventListener("change", () => {
   classifyAiForMotion();
@@ -1062,7 +1314,7 @@ clearListButton.addEventListener("click", async () => {
   revokeActiveRecordingUrls();
   storedRecordingCount = 0;
   storedRecordingBytes = 0;
-  recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
+  recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
   updateDiagnostics();
 });
 window.addEventListener("resize", resizeOverlay);

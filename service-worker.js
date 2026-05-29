@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v5-ai-static-vs-moving-1";
+const CACHE_NAME = "detectorcam-v5-ai-classified-events";
 const ASSETS = [
   "./",
   "./index.html",
@@ -24,21 +24,13 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
-
-  if (request.method !== "GET" || url.origin !== self.location.origin) return;
-
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-
-      return fetch(request).then((response) => {
-        if (!response || response.status !== 200 || response.type !== "basic") return response;
+    fetch(event.request)
+      .then((response) => {
         const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
-      });
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });
