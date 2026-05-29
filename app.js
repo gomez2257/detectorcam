@@ -86,6 +86,7 @@ let handLandmarker = null;
 let faceLandmarker = null;
 let objectDetector = null;
 let lastObjectInferenceAt = 0;
+let lastAiRuntimeErrorAt = 0;
 let lastAi = { poses: [], hands: [], faces: [] };
 let lastVisibleAi = { poses: [], hands: [], faces: [] };
 let lastStaticAi = { poses: [], hands: [], faces: [] };
@@ -181,7 +182,7 @@ async function initAi() {
 
     try {
       poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "CPU" },
         runningMode: "VIDEO",
         numPoses: 2,
         minPoseDetectionConfidence: 0.35,
@@ -197,7 +198,7 @@ async function initAi() {
 
     try {
       handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "CPU" },
         runningMode: "VIDEO",
         numHands: 2,
         minHandDetectionConfidence: 0.35,
@@ -213,7 +214,7 @@ async function initAi() {
 
     try {
       faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "CPU" },
         runningMode: "VIDEO",
         numFaces: 1,
         minFaceDetectionConfidence: 0.4,
@@ -229,7 +230,7 @@ async function initAi() {
 
     try {
       objectDetector = await ObjectDetector.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
+        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "CPU" },
         runningMode: "VIDEO",
         maxResults: 8,
         scoreThreshold: 0.42,
@@ -274,7 +275,19 @@ async function startCamera() {
     stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     video.srcObject = stream;
     await video.play();
-    await refreshCameraList();
+    await waitForVideoReady();
+
+    startCameraButton.textContent = "Reiniciar";
+    recordButton.disabled = typeof MediaRecorder === "undefined";
+    switchCameraButton.disabled = false;
+    cameraSelect.disabled = false;
+
+    try {
+      await refreshCameraList();
+    } catch (error) {
+      console.warn("No se pudo listar camaras, pero la camara activa sigue funcionando", error);
+    }
+
     resizeOverlayIfNeeded();
     previousFrame = null;
     backgroundBrightness = null;
@@ -285,10 +298,6 @@ async function startCamera() {
     previousAiForMotion = { poses: [], hands: [], faces: [] };
     lastObjects = [];
     lastEventSummary = { type: "none", label: "Sin evento", alert: false };
-    startCameraButton.textContent = "Reiniciar";
-    recordButton.disabled = false;
-    switchCameraButton.disabled = false;
-    cameraSelect.disabled = false;
     setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
     detectLoop();
   } catch (error) {
@@ -308,6 +317,17 @@ function stopCamera() {
     stream.getTracks().forEach((track) => track.stop());
     stream = null;
   }
+}
+
+function waitForVideoReady() {
+  if (video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const finish = () => resolve();
+    video.addEventListener("loadedmetadata", finish, { once: true });
+    video.addEventListener("canplay", finish, { once: true });
+    setTimeout(resolve, 1200);
+  });
 }
 
 async function refreshCameraList() {
@@ -376,7 +396,11 @@ function runAiDetection(now) {
 
     lastAi = { poses, hands, faces };
   } catch (error) {
-    console.warn(error);
+    console.warn("Error ejecutando IA", error);
+    if (performance.now() - lastAiRuntimeErrorAt > 2500) {
+      lastAiRuntimeErrorAt = performance.now();
+      motionStats.textContent = "IA cargada, pero no pudo analizar este frame. Prueba buena luz y aleja la camara.";
+    }
   }
 }
 
@@ -1367,5 +1391,13 @@ clearListButton.addEventListener("click", async () => {
 window.addEventListener("resize", resizeOverlayIfNeeded);
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js").catch(console.error);
+  navigator.serviceWorker.getRegistrations?.().then((registrations) => {
+    registrations.forEach((registration) => registration.unregister());
+  }).catch(console.warn);
+}
+
+if ("caches" in window) {
+  caches.keys().then((keys) => {
+    keys.filter((key) => key.startsWith("detectorcam")).forEach((key) => caches.delete(key));
+  }).catch(console.warn);
 }
