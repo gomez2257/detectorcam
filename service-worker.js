@@ -1,9 +1,9 @@
-const CACHE_NAME = "detectorcam-v6-paso4-ia-robusta";
+const CACHE_NAME = "detectorcam-v5-ai-classified-events";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
-  "./app.js?v=paso4-ia-robusta",
+  "./app.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -24,13 +24,6 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const requestUrl = new URL(event.request.url);
-
-  if (requestUrl.origin !== self.location.origin || event.request.method !== "GET") {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-
   event.respondWith(
     fetch(event.request)
       .then((response) => {
