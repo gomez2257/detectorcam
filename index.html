@@ -10,7 +10,7 @@
     <title>DetectorCam</title>
     <link rel="manifest" href="./manifest.json" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-    <link rel="stylesheet" href="./styles.css?v=iarapida1" />
+    <link rel="stylesheet" href="./styles.css?v=modoseguro1" />
   </head>
   <body>
     <main class="app">
@@ -43,9 +43,9 @@
         <label class="field field-full">
           <span>Modo IA</span>
           <select id="aiMode">
-            <option value="holistic" selected>Cuerpo + manos + cara</option>
+            <option value="holistic">Cuerpo + manos + cara</option>
             <option value="poseHands">Cuerpo + manos</option>
-            <option value="pose">Solo cuerpo</option>
+            <option value="pose" selected>Solo cuerpo rapido</option>
             <option value="motion">Solo movimiento fino</option>
           </select>
         </label>
@@ -131,6 +131,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=iarapida1"></script>
+    <script type="module" src="./app.js?v=modoseguro1"></script>
   </body>
 </html>
