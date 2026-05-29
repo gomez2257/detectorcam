@@ -4,7 +4,7 @@ import {
   HandLandmarker,
   ObjectDetector,
   PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.15/vision_bundle.mjs";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -68,7 +68,6 @@ const FACE_CONNECTIONS = [
 
 let stream = null;
 let recordingStream = null;
-let recordingAudioStream = null;
 let mediaRecorder = null;
 let recordedChunks = [];
 let previousFrame = null;
@@ -133,9 +132,9 @@ const OBJECT_LABELS_ES = {
   motorcycle: "moto",
   bicycle: "bicicleta",
   bus: "bus",
-  truck: "camión",
+  truck: "camion",
   chair: "silla",
-  couch: "sofá",
+  couch: "sofa",
   bed: "cama",
   backpack: "morral",
   handbag: "bolso",
@@ -143,7 +142,7 @@ const OBJECT_LABELS_ES = {
   bottle: "botella",
   cup: "vaso",
   cell_phone: "celular",
-  laptop: "portátil",
+  laptop: "portatil",
   tv: "televisor",
   book: "libro",
 };
@@ -166,104 +165,62 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
-  setStatus("Cargando IA", "idle");
-  motionStats.textContent = "Cargando IA. Puedes abrir la cámara mientras termina.";
-
   try {
-    const vision = await withTimeout(
-      FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.15/wasm"),
-      18000,
-      "No cargó el motor WASM de MediaPipe"
+    setStatus("Cargando IA", "idle");
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
     );
 
-    poseLandmarker = await createOptionalTask("pose", () => PoseLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.pose },
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
       runningMode: "VIDEO",
       numPoses: 2,
-      minPoseDetectionConfidence: 0.42,
-      minPosePresenceConfidence: 0.42,
-      minTrackingConfidence: 0.42,
-    }), 22000);
+      minPoseDetectionConfidence: 0.35,
+      minPosePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
 
-    handLandmarker = await createOptionalTask("manos", () => HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.hands },
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
       runningMode: "VIDEO",
       numHands: 2,
-      minHandDetectionConfidence: 0.42,
-      minHandPresenceConfidence: 0.42,
-      minTrackingConfidence: 0.42,
-    }), 18000);
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
 
-    // La IA principal queda lista con cuerpo y/o manos. El rostro y objetos son complementos.
-    visionReady = Boolean(poseLandmarker || handLandmarker);
-    if (visionReady) {
-      setStatus("IA lista", "idle");
-      motionStats.textContent = "IA lista | abre la cámara";
-    } else {
-      setStatus("IA parcial", "idle");
-      motionStats.textContent = "IA parcial. Prueba abrir cámara o recarga con internet estable.";
-    }
-
-    createOptionalTask("rostro", () => FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.face },
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
       runningMode: "VIDEO",
       numFaces: 1,
-      minFaceDetectionConfidence: 0.45,
-      minFacePresenceConfidence: 0.45,
-      minTrackingConfidence: 0.45,
-    }), 18000).then((task) => {
-      faceLandmarker = task;
-      if (task && !visionReady) {
-        visionReady = true;
-        setStatus("IA lista", "idle");
-        motionStats.textContent = "IA lista | abre la cámara";
-      }
+      minFaceDetectionConfidence: 0.4,
+      minFacePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
     });
 
-    createOptionalTask("objetos", () => ObjectDetector.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.object },
-      runningMode: "VIDEO",
-      maxResults: 8,
-      scoreThreshold: 0.45,
-    }), 20000).then((task) => {
-      objectDetector = task;
-    });
+    try {
+      objectDetector = await ObjectDetector.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
+        runningMode: "VIDEO",
+        maxResults: 8,
+        scoreThreshold: 0.42,
+      });
+    } catch (error) {
+      console.warn("Detector de objetos no disponible", error);
+      objectDetector = null;
+    }
+
+    visionReady = true;
+    setStatus("IA lista", "idle");
+    motionStats.textContent = "IA lista | abre la camara";
   } catch (error) {
     console.error(error);
-    visionReady = false;
-    setStatus("IA no cargó", "idle");
-    motionStats.textContent = `IA no cargó: ${getErrorText(error)}. La cámara puede funcionar en modo movimiento.`;
-  } finally {
-    updateDiagnostics();
+    setStatus("IA no cargo", "idle");
+    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
   }
-}
-
-async function createOptionalTask(name, factory, timeoutMs) {
-  try {
-    return await withTimeout(factory(), timeoutMs, `Tiempo agotado cargando ${name}`);
-  } catch (error) {
-    console.warn(`Módulo IA no disponible: ${name}`, error);
-    return null;
-  }
-}
-
-function withTimeout(promise, ms, message) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
-  ]);
-}
-
-function getErrorText(error) {
-  return error?.message || String(error || "error desconocido");
 }
 
 async function startCamera() {
-  if (isRecording) {
-    setStatus("Detén la grabación antes de reiniciar", "recording");
-    return;
-  }
-
   stopCamera();
 
   try {
@@ -272,13 +229,7 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
-    } catch (firstError) {
-      console.warn("Primer intento de cámara falló, se intenta modo básico", firstError);
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    }
-
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -296,13 +247,12 @@ async function startCamera() {
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
     cameraSelect.disabled = false;
-    setStatus(visionReady ? "Cámara activa" : "Cámara activa sin IA", "idle");
+    setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
     detectLoop();
   } catch (error) {
     console.error(error);
     setStatus("Sin permiso", "idle");
-    motionStats.textContent = `No se pudo abrir la cámara: ${getErrorText(error)}`;
-    alert("No se pudo abrir la cámara. Revisa permisos del navegador y que estés usando localhost o HTTPS.");
+    alert("No se pudo abrir la camara. Revisa permisos del navegador.");
   }
 }
 
@@ -311,11 +261,6 @@ function stopCamera() {
   if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
   animationId = null;
   recordingAnimationId = null;
-
-  if (recordingAudioStream) {
-    recordingAudioStream.getTracks().forEach((track) => track.stop());
-    recordingAudioStream = null;
-  }
 
   if (stream) {
     stream.getTracks().forEach((track) => track.stop());
@@ -330,11 +275,11 @@ async function refreshCameraList() {
   const activeTrack = stream?.getVideoTracks()[0];
   const activeDeviceId = activeTrack?.getSettings().deviceId || cameraSelect.value;
 
-  cameraSelect.innerHTML = '<option value="">Cámara automática</option>';
+  cameraSelect.innerHTML = '<option value="">Camara automatica</option>';
   cameras.forEach((camera, index) => {
     const option = document.createElement("option");
     option.value = camera.deviceId;
-    option.textContent = camera.label || `Cámara ${index + 1}`;
+    option.textContent = camera.label || `Camara ${index + 1}`;
     option.selected = camera.deviceId === activeDeviceId;
     cameraSelect.append(option);
   });
@@ -366,17 +311,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
+    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
+    if (mode === "holistic" || mode === "poseHands") {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (faceLandmarker && mode === "holistic") {
+    if (mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -389,7 +334,7 @@ function runAiDetection(now) {
 
     lastAi = { poses, hands, faces };
   } catch (error) {
-    console.warn("Error ejecutando IA en video", error);
+    console.warn(error);
   }
 }
 
@@ -492,8 +437,8 @@ function landmarkGroupHasTrueMotion(landmarks, previous, type) {
 
   const motionScore = getMotionScoreInsideLandmarks(landmarks, type);
   const landmarkShift = getLandmarkShift(landmarks, previous, type);
-  const requiredMotion = type === "pose" ? 2.8 : type === "hand" ? 0.9 : 1.6;
-  const requiredShift = type === "pose" ? 0.022 : type === "hand" ? 0.014 : 0.012;
+  const requiredMotion = type === "pose" ? 2.2 : type === "hand" ? 0.7 : 1.4;
+  const requiredShift = type === "pose" ? 0.018 : type === "hand" ? 0.012 : 0.01;
 
   if (motionScore >= requiredMotion) return true;
   if (!lastMotion.points.length) return false;
@@ -509,7 +454,7 @@ function getMotionScoreInsideLandmarks(landmarks, type) {
   const visible = landmarks.filter((landmark) => isVisible(landmark, type === "face" ? 0.12 : 0.2));
   if (!visible.length) return 0;
 
-  const padding = type === "hand" ? 0.05 : type === "face" ? 0.04 : 0.055;
+  const padding = type === "hand" ? 0.06 : type === "face" ? 0.05 : 0.07;
   const minX = Math.max(0, Math.min(...visible.map((landmark) => landmark.x)) - padding);
   const maxX = Math.min(1, Math.max(...visible.map((landmark) => landmark.x)) + padding);
   const minY = Math.max(0, Math.min(...visible.map((landmark) => landmark.y)) - padding);
@@ -519,7 +464,7 @@ function getMotionScoreInsideLandmarks(landmarks, type) {
     const x = point.x / grid.width;
     const y = point.y / grid.height;
     if (x < minX || x > maxX || y < minY || y > maxY) return score;
-    if (point.strength < 0.42) return score;
+    if (point.strength < 0.38) return score;
     return score + point.strength;
   }, 0);
 }
@@ -888,7 +833,7 @@ function updateStatus() {
   }
 
   if (Date.now() - lastMotionAt > 700) {
-    setStatus(isRecording ? "Grabando" : "Cámara activa", isRecording ? "recording" : "idle");
+    setStatus(isRecording ? "Grabando" : "Camara activa", isRecording ? "recording" : "idle");
   }
 }
 function buildBrightnessFrame(frame) {
@@ -1050,7 +995,7 @@ function resizeOverlay() {
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
 
-async function toggleRecording() {
+function toggleRecording() {
   if (!stream) return;
   if (isRecording) {
     mediaRecorder.stop();
@@ -1060,35 +1005,18 @@ async function toggleRecording() {
   recordedChunks = [];
   recordingEventTypes = new Set();
   rememberRecordingEvent(getDetectionSummary());
-
-  try {
-    try {
-      recordingAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    } catch (audioError) {
-      console.warn("Grabación sin audio", audioError);
-      recordingAudioStream = null;
-    }
-
-    recordingStream = createRecordingStream();
-    const mimeType = getSupportedMimeType();
-    mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) recordedChunks.push(event.data);
-    };
-    mediaRecorder.onstop = saveRecording;
-    mediaRecorder.start();
-    isRecording = true;
-    startCameraButton.disabled = true;
-    switchCameraButton.disabled = true;
-    cameraSelect.disabled = true;
-    recordButton.textContent = "Detener";
-    recordButton.classList.add("primary");
-    setStatus("Grabando", "recording");
-  } catch (error) {
-    console.error(error);
-    setStatus("No grabó", "idle");
-    motionStats.textContent = `No se pudo iniciar la grabación: ${getErrorText(error)}`;
-  }
+  recordingStream = createRecordingStream();
+  const mimeType = getSupportedMimeType();
+  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size > 0) recordedChunks.push(event.data);
+  };
+  mediaRecorder.onstop = saveRecording;
+  mediaRecorder.start();
+  isRecording = true;
+  recordButton.textContent = "Detener";
+  recordButton.classList.add("primary");
+  setStatus("Grabando", "recording");
 }
 
 function createRecordingStream() {
@@ -1115,7 +1043,7 @@ function createRecordingStream() {
 
   draw();
   const canvasStream = recordingCanvas.captureStream(30);
-  recordingAudioStream?.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+  stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   return canvasStream;
 }
 
@@ -1133,17 +1061,12 @@ function getSupportedMimeType() {
 async function saveRecording() {
   if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
   recordingAnimationId = null;
-  if (recordingStream) recordingStream.getTracks().forEach((track) => track.stop());
+  if (recordingStream) recordingStream.getVideoTracks().forEach((track) => track.stop());
   recordingStream = null;
-  if (recordingAudioStream) recordingAudioStream.getTracks().forEach((track) => track.stop());
-  recordingAudioStream = null;
   isRecording = false;
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
-  startCameraButton.disabled = false;
-  switchCameraButton.disabled = false;
-  cameraSelect.disabled = false;
-  setStatus("Cámara activa", "idle");
+  setStatus("Camara activa", "idle");
 
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -1347,7 +1270,7 @@ function formatBytes(bytes) {
 
 function updateDiagnostics() {
   if (diagAi) diagAi.textContent = visionReady ? (objectDetector ? "IA + objetos" : "IA cargada") : "IA cargando/error";
-  if (diagCamera) diagCamera.textContent = stream ? "Cámara activa" : "Cámara inactiva";
+  if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
   if (diagRecorder) {
     diagRecorder.textContent = typeof MediaRecorder === "undefined"
       ? "No soportado"

@@ -1,5 +1,5 @@
-const CACHE_NAME = "detectorcam-v5-fix-ia-camara-20260529";
-const LOCAL_ASSETS = [
+const CACHE_NAME = "detectorcam-v5-ai-classified-events";
+const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
@@ -10,7 +10,7 @@ const LOCAL_ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(LOCAL_ASSETS)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
   self.skipWaiting();
 });
 
@@ -24,13 +24,6 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const requestUrl = new URL(event.request.url);
-
-  if (requestUrl.origin !== self.location.origin || event.request.method !== "GET") {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-
   event.respondWith(
     fetch(event.request)
       .then((response) => {
