@@ -1,9 +1,9 @@
-const CACHE_NAME = "detectorcam-v6-github-estable-01";
+const CACHE_NAME = "detectorcam-v6-paso4-ia-robusta";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
-  "./app.js",
+  "./app.js?v=paso4-ia-robusta",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -25,15 +25,17 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
-  const sameOrigin = requestUrl.origin === self.location.origin;
+
+  if (requestUrl.origin !== self.location.origin || event.request.method !== "GET") {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        if (sameOrigin && event.request.method === "GET") {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        }
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
       })
       .catch(() => caches.match(event.request))

@@ -79,6 +79,7 @@ let isRecording = false;
 let lastMotionAt = 0;
 let lastInferenceAt = 0;
 let visionReady = false;
+let aiStatusText = "IA cargando/error";
 let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
@@ -165,58 +166,120 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
+  setStatus("Cargando IA", "idle");
+  motionStats.textContent = "IA cargando... puedes abrir la camara";
+  aiStatusText = "IA cargando";
+  updateDiagnostics();
+
+  const withTimeout = (promise, label, ms = 18000) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${label}: tiempo agotado`)), ms)
+      ),
+    ]);
+
+  async function createModel(label, creator, options) {
+    try {
+      return await withTimeout(creator(options), label, 22000);
+    } catch (gpuError) {
+      console.warn(`${label} no cargo con GPU. Intentando CPU.`, gpuError);
+      try {
+        const cpuOptions = {
+          ...options,
+          baseOptions: {
+            ...options.baseOptions,
+            delegate: "CPU",
+          },
+        };
+        return await withTimeout(creator(cpuOptions), `${label} CPU`, 22000);
+      } catch (cpuError) {
+        console.warn(`${label} no disponible`, cpuError);
+        return null;
+      }
+    }
+  }
+
   try {
-    setStatus("Cargando IA", "idle");
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    const vision = await withTimeout(
+      FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"),
+      "WASM MediaPipe",
+      18000
     );
 
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numPoses: 2,
-      minPoseDetectionConfidence: 0.35,
-      minPosePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    poseLandmarker = await createModel(
+      "Cuerpo",
+      (options) => PoseLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numPoses: 2,
+        minPoseDetectionConfidence: 0.35,
+        minPosePresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
+      }
+    );
 
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.35,
-      minHandPresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    handLandmarker = await createModel(
+      "Manos",
+      (options) => HandLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.35,
+        minHandPresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
+      }
+    );
 
-    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numFaces: 1,
-      minFaceDetectionConfidence: 0.4,
-      minFacePresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
-    });
+    faceLandmarker = await createModel(
+      "Cara",
+      (options) => FaceLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        minFaceDetectionConfidence: 0.4,
+        minFacePresenceConfidence: 0.4,
+        minTrackingConfidence: 0.4,
+      }
+    );
 
-    try {
-      objectDetector = await ObjectDetector.createFromOptions(vision, {
+    objectDetector = await createModel(
+      "Objetos",
+      (options) => ObjectDetector.createFromOptions(vision, options),
+      {
         baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
         runningMode: "VIDEO",
         maxResults: 8,
         scoreThreshold: 0.42,
-      });
-    } catch (error) {
-      console.warn("Detector de objetos no disponible", error);
-      objectDetector = null;
-    }
+      }
+    );
 
-    visionReady = true;
-    setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la camara";
+    visionReady = Boolean(poseLandmarker || handLandmarker || faceLandmarker);
+
+    if (visionReady) {
+      const loaded = [
+        poseLandmarker ? "cuerpo" : null,
+        handLandmarker ? "manos" : null,
+        faceLandmarker ? "cara" : null,
+        objectDetector ? "objetos" : null,
+      ].filter(Boolean).join(" + ");
+      aiStatusText = `IA lista: ${loaded}`;
+      setStatus("IA lista", "idle");
+      motionStats.textContent = `${aiStatusText} | abre la camara`;
+    } else {
+      aiStatusText = "IA no cargo modelos";
+      setStatus("IA no cargo", "idle");
+      motionStats.textContent = "IA no cargo modelos. La camara y grabacion pueden funcionar.";
+    }
   } catch (error) {
     console.error(error);
+    visionReady = false;
+    aiStatusText = `IA error: ${error.message || error}`;
     setStatus("IA no cargo", "idle");
-    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
+    motionStats.textContent = aiStatusText;
   }
 }
 
@@ -229,7 +292,7 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -311,17 +374,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
+    if ((mode === "holistic" || mode === "poseHands" || mode === "pose") && poseLandmarker) {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (mode === "holistic" || mode === "poseHands") {
+    if ((mode === "holistic" || mode === "poseHands") && handLandmarker) {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (mode === "holistic") {
+    if (mode === "holistic" && faceLandmarker) {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -1269,7 +1332,7 @@ function formatBytes(bytes) {
 }
 
 function updateDiagnostics() {
-  if (diagAi) diagAi.textContent = visionReady ? (objectDetector ? "IA + objetos" : "IA cargada") : "IA cargando/error";
+  if (diagAi) diagAi.textContent = aiStatusText;
   if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
   if (diagRecorder) {
     diagRecorder.textContent = typeof MediaRecorder === "undefined"
