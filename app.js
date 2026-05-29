@@ -79,6 +79,8 @@ let isRecording = false;
 let lastMotionAt = 0;
 let lastInferenceAt = 0;
 let visionReady = false;
+let aiStatusText = "IA cargando";
+let aiErrorText = "";
 let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
@@ -165,58 +167,118 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
+  setStatus("Cargando IA", "idle");
+  aiStatusText = "IA cargando";
+  aiErrorText = "";
+  motionStats.textContent = "IA cargando... puedes abrir la camara";
+  updateDiagnostics();
+
+  const loadErrors = [];
+
+  async function loadModel(label, factory, gpuOptions) {
+    try {
+      return await factory(gpuOptions);
+    } catch (gpuError) {
+      console.warn(`${label} no cargo con GPU. Intentando CPU.`, gpuError);
+      loadErrors.push(`${label} GPU: ${gpuError?.message || gpuError}`);
+      try {
+        const cpuOptions = {
+          ...gpuOptions,
+          baseOptions: {
+            ...gpuOptions.baseOptions,
+            delegate: "CPU",
+          },
+        };
+        return await factory(cpuOptions);
+      } catch (cpuError) {
+        console.warn(`${label} no disponible`, cpuError);
+        loadErrors.push(`${label} CPU: ${cpuError?.message || cpuError}`);
+        return null;
+      }
+    }
+  }
+
   try {
-    setStatus("Cargando IA", "idle");
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
     );
 
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numPoses: 2,
-      minPoseDetectionConfidence: 0.35,
-      minPosePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    poseLandmarker = await loadModel(
+      "Cuerpo",
+      (options) => PoseLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numPoses: 2,
+        minPoseDetectionConfidence: 0.25,
+        minPosePresenceConfidence: 0.25,
+        minTrackingConfidence: 0.25,
+      }
+    );
 
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.35,
-      minHandPresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    handLandmarker = await loadModel(
+      "Manos",
+      (options) => HandLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.25,
+        minHandPresenceConfidence: 0.25,
+        minTrackingConfidence: 0.25,
+      }
+    );
 
-    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numFaces: 1,
-      minFaceDetectionConfidence: 0.4,
-      minFacePresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
-    });
+    faceLandmarker = await loadModel(
+      "Cara",
+      (options) => FaceLandmarker.createFromOptions(vision, options),
+      {
+        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        minFaceDetectionConfidence: 0.25,
+        minFacePresenceConfidence: 0.25,
+        minTrackingConfidence: 0.25,
+      }
+    );
 
-    try {
-      objectDetector = await ObjectDetector.createFromOptions(vision, {
+    objectDetector = await loadModel(
+      "Objetos",
+      (options) => ObjectDetector.createFromOptions(vision, options),
+      {
         baseOptions: { modelAssetPath: MODEL_URLS.object, delegate: "GPU" },
         runningMode: "VIDEO",
         maxResults: 8,
         scoreThreshold: 0.42,
-      });
-    } catch (error) {
-      console.warn("Detector de objetos no disponible", error);
-      objectDetector = null;
-    }
+      }
+    );
 
-    visionReady = true;
-    setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la camara";
+    visionReady = Boolean(poseLandmarker || handLandmarker || faceLandmarker || objectDetector);
+    const loaded = [
+      poseLandmarker ? "cuerpo" : null,
+      handLandmarker ? "manos" : null,
+      faceLandmarker ? "cara" : null,
+      objectDetector ? "objetos" : null,
+    ].filter(Boolean);
+
+    if (visionReady) {
+      aiStatusText = `IA lista: ${loaded.join(" + ")}`;
+      aiErrorText = loadErrors.length ? loadErrors.slice(-2).join(" | ") : "";
+      setStatus("IA lista", "idle");
+      motionStats.textContent = `${aiStatusText} | abre la camara`;
+    } else {
+      aiStatusText = "IA sin modelos";
+      aiErrorText = loadErrors.slice(-3).join(" | ");
+      setStatus("IA no cargo", "idle");
+      motionStats.textContent = "IA sin modelos. La camara puede grabar sin esqueleto.";
+    }
   } catch (error) {
     console.error(error);
+    visionReady = false;
+    aiStatusText = "IA error base";
+    aiErrorText = error?.message || String(error);
     setStatus("IA no cargo", "idle");
-    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
+    motionStats.textContent = `IA error: ${aiErrorText}`;
   }
 }
 
@@ -229,10 +291,18 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     video.srcObject = stream;
     await video.play();
-    await refreshCameraList();
+    startCameraButton.textContent = "Reiniciar";
+    recordButton.disabled = false;
+    switchCameraButton.disabled = false;
+    cameraSelect.disabled = false;
+    try {
+      await refreshCameraList();
+    } catch (cameraListError) {
+      console.warn("No se pudo listar camaras", cameraListError);
+    }
     resizeOverlay();
     previousFrame = null;
     backgroundBrightness = null;
@@ -311,17 +381,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
+    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (mode === "holistic" || mode === "poseHands") {
+    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (mode === "holistic") {
+    if (faceLandmarker && mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -335,6 +405,7 @@ function runAiDetection(now) {
     lastAi = { poses, hands, faces };
   } catch (error) {
     console.warn(error);
+    aiErrorText = error?.message || String(error);
   }
 }
 
@@ -370,8 +441,12 @@ function drawScene() {
 
   if (mode !== "motion" && visual !== "trail" && visual !== "heat") {
     drawObjectOverlay(overlayContext, lastObjects, rect.width, rect.height);
-    drawAiOverlay(overlayContext, lastStaticAi, rect.width, rect.height, visual, "static");
-    drawAiOverlay(overlayContext, lastVisibleAi, rect.width, rect.height, visual, "active");
+    if (motionGateInput?.checked) {
+      drawAiOverlay(overlayContext, lastStaticAi, rect.width, rect.height, visual, "static");
+      drawAiOverlay(overlayContext, lastVisibleAi, rect.width, rect.height, visual, "active");
+    } else {
+      drawAiOverlay(overlayContext, lastAi, rect.width, rect.height, visual, "active");
+    }
   } else if (mode === "motion") {
     drawObjectOverlay(overlayContext, lastObjects, rect.width, rect.height);
   }
@@ -413,6 +488,14 @@ function classifyLandmarkGroups(groups, previousGroups, type) {
       active: landmarkGroupHasTrueMotion(landmarks, previous, type),
     };
   });
+}
+
+function mergeAi(a, b) {
+  return {
+    poses: [...(a?.poses || []), ...(b?.poses || [])],
+    hands: [...(a?.hands || []), ...(b?.hands || [])],
+    faces: [...(a?.faces || []), ...(b?.faces || [])],
+  };
 }
 
 function cloneAiLandmarks(ai) {
@@ -990,33 +1073,51 @@ function clamp(value, min, max) {
 function resizeOverlay() {
   const rect = video.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
-  overlay.width = Math.round(rect.width * pixelRatio);
-  overlay.height = Math.round(rect.height * pixelRatio);
+  const nextWidth = Math.round(rect.width * pixelRatio);
+  const nextHeight = Math.round(rect.height * pixelRatio);
+  if (overlay.width !== nextWidth || overlay.height !== nextHeight) {
+    overlay.width = nextWidth;
+    overlay.height = nextHeight;
+  }
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
 
 function toggleRecording() {
   if (!stream) return;
-  if (isRecording) {
-    mediaRecorder.stop();
+  if (typeof MediaRecorder === "undefined") {
+    alert("Este navegador no permite grabar video desde la app. Prueba Chrome actualizado en Android.");
+    setStatus("Grabador no soportado", "idle");
     return;
   }
 
-  recordedChunks = [];
-  recordingEventTypes = new Set();
-  rememberRecordingEvent(getDetectionSummary());
-  recordingStream = createRecordingStream();
-  const mimeType = getSupportedMimeType();
-  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) recordedChunks.push(event.data);
-  };
-  mediaRecorder.onstop = saveRecording;
-  mediaRecorder.start();
-  isRecording = true;
-  recordButton.textContent = "Detener";
-  recordButton.classList.add("primary");
-  setStatus("Grabando", "recording");
+  if (isRecording) {
+    mediaRecorder?.stop();
+    return;
+  }
+
+  try {
+    recordedChunks = [];
+    recordingEventTypes = new Set();
+    rememberRecordingEvent(getDetectionSummary());
+    recordingStream = createRecordingStream();
+    const mimeType = getSupportedMimeType();
+    mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordedChunks.push(event.data);
+    };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start();
+    isRecording = true;
+    recordButton.textContent = "Detener";
+    recordButton.classList.add("primary");
+    setStatus("Grabando", "recording");
+  } catch (error) {
+    console.warn(error);
+    if (recordingStream) recordingStream.getTracks().forEach((track) => track.stop());
+    recordingStream = null;
+    setStatus("Error grabador", "idle");
+    alert("No se pudo iniciar la grabacion en este navegador.");
+  }
 }
 
 function createRecordingStream() {
@@ -1034,8 +1135,12 @@ function createRecordingStream() {
         drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
       } else {
         drawObjectOverlay(recordingContext, lastObjects, width, height);
-        drawAiOverlay(recordingContext, lastStaticAi, width, height, visualModeSelect.value, "static");
-        drawAiOverlay(recordingContext, lastVisibleAi, width, height, visualModeSelect.value, "active");
+        if (motionGateInput?.checked) {
+          drawAiOverlay(recordingContext, lastStaticAi, width, height, visualModeSelect.value, "static");
+          drawAiOverlay(recordingContext, lastVisibleAi, width, height, visualModeSelect.value, "active");
+        } else {
+          drawAiOverlay(recordingContext, lastAi, width, height, visualModeSelect.value, "active");
+        }
       }
     }
     recordingAnimationId = requestAnimationFrame(draw);
@@ -1048,6 +1153,7 @@ function createRecordingStream() {
 }
 
 function getSupportedMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
   const types = [
     "video/mp4;codecs=h264,aac",
     "video/mp4",
@@ -1067,6 +1173,11 @@ async function saveRecording() {
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
   setStatus("Camara activa", "idle");
+
+  if (!recordedChunks.length) {
+    setStatus("Sin video", "idle");
+    return;
+  }
 
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -1269,7 +1380,7 @@ function formatBytes(bytes) {
 }
 
 function updateDiagnostics() {
-  if (diagAi) diagAi.textContent = visionReady ? (objectDetector ? "IA + objetos" : "IA cargada") : "IA cargando/error";
+  if (diagAi) diagAi.textContent = aiErrorText ? `${aiStatusText} | ${aiErrorText}` : aiStatusText;
   if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
   if (diagRecorder) {
     diagRecorder.textContent = typeof MediaRecorder === "undefined"
