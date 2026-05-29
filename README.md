@@ -1,45 +1,47 @@
-# DetectorCam
+# DetectorCam v5 Pro
 
-Aplicación web PWA para detectar movimiento y marcas corporales con MediaPipe.
-
-## Requisitos
-
-- Node.js 18 o superior.
-- Navegador moderno basado en Chromium, Edge o Chrome recomendado.
-- Permiso de cámara.
-- Internet para cargar MediaPipe y modelos de IA.
+Versión combinada entre la última actualización con clasificación de eventos y el filtro estricto contra falsos positivos.
 
 ## Cómo abrir
 
-Opción 1, Windows:
+Opción 1 en Windows:
 
-1. Abre `abrir_detectorcam.bat`.
-2. El navegador abre `http://127.0.0.1:8787`.
+1. Instala Node.js si no lo tienes.
+2. Ejecuta `abrir_detectorcam.bat`.
+3. Abre `http://127.0.0.1:8787`.
 
-Opción 2, terminal:
+Opción 2 por consola:
 
 ```bash
 npm start
 ```
 
-Luego abre:
+## Qué mejora esta versión
 
-```text
-http://127.0.0.1:8787
-```
+- Mantiene la clasificación de eventos: persona, animal, objeto, anomalía y forma quieta.
+- Reduce falsos positivos sobre objetos inmóviles como bolsos, almohadas o ropa.
+- No marca movimiento solo porque MediaPipe dibuje un esqueleto falso.
+- Exige movimiento visual local, desplazamiento de landmarks y varios puntos activos.
+- Usa MediaPipe con versión fija `0.10.22`.
+- La cámara no pide micrófono al iniciar.
+- El micrófono se pide solo al grabar. Si no hay permiso, graba sin audio.
+- Bloquea reiniciar o cambiar cámara mientras graba.
+- Mejora el service worker para cachear solo archivos locales.
 
-## Cambios de esta versión
+## Validación
 
-- Se corrigió el `.bat` para que funcione en otros computadores con Node.js instalado.
-- La cámara ya no pide micrófono al abrir.
-- El audio se solicita solo al iniciar grabación. Si el usuario no lo permite, graba sin audio.
-- Se bloquea reiniciar o cambiar cámara mientras se está grabando.
-- Se fijó la version de MediaPipe en `0.10.22` para evitar cambios inesperados de `latest`.
-- Se ajustó el service worker para cachear solo recursos locales.
-- Se agregó `package.json` con comandos `npm start` y `npm run check`.
-
-## Validación técnica
+Ejecuta:
 
 ```bash
 npm run check
 ```
+
+Esto revisa sintaxis de `app.js`, `server.js` y `service-worker.js`.
+
+## Prueba recomendada
+
+1. Apunta la cámara a un objeto quieto.
+2. Espera de 3 a 5 segundos.
+3. Debe aparecer como forma quieta u objeto quieto, no como movimiento.
+4. Mueve una mano o camina frente a la cámara.
+5. Debe marcar persona en movimiento o evento detectado.

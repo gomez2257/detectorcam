@@ -1,13 +1,17 @@
 {
-  "name": "detectorcam",
-  "version": "5.0.1",
-  "description": "DetectorCam PWA con detección visual, movimiento fino, grabación e historial local.",
-  "private": true,
+  "name": "detectorcam-v5-pro",
+  "version": "5.2.0",
+  "description": "DetectorCam AI con clasificacion de eventos y filtro estricto contra falsos positivos.",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js && node --check service-worker.js"
+    "check": "node --input-type=module --check < app.js && node --check server.js && node --check service-worker.js"
   },
-  "engines": {
-    "node": ">=18"
-  }
+  "keywords": [
+    "detectorcam",
+    "mediapipe",
+    "pwa",
+    "motion-detection"
+  ],
+  "license": "UNLICENSED"
 }
