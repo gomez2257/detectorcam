@@ -628,8 +628,11 @@ async function saveRecording() {
     <div class="recording-actions">
       <a href="${url}" download="${fileName}">Descargar video</a>
       <button type="button" class="ghost save-video">Guardar / compartir</button>
+      <button type="button" class="danger delete-video">Eliminar</button>
     </div>
   `;
+
+  const deleteButton = item.querySelector(".delete-video");
 
   item.querySelector(".save-video").addEventListener("click", async () => {
     if (canShare) {
@@ -637,6 +640,14 @@ async function saveRecording() {
     } else {
       const link = item.querySelector("a");
       link.click();
+    }
+  });
+
+  deleteButton.addEventListener("click", () => {
+    URL.revokeObjectURL(url);
+    item.remove();
+    if (!recordingList.querySelector(".recording-item")) {
+      recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
     }
   });
 

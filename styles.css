@@ -287,7 +287,7 @@ h2 {
 }
 .recording-actions {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 10px;
 }
@@ -301,4 +301,13 @@ h2 {
   .recording-actions {
     grid-template-columns: 1fr;
   }
+}
+.danger {
+  border: 0;
+  border-radius: 8px;
+  background: #ff5b5b;
+  color: #1b0909;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 8px 10px;
 }
