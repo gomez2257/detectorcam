@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v6-paso3-estable";
+const CACHE_NAME = "detectorcam-v6-github-estable-01";
 const ASSETS = [
   "./",
   "./index.html",
@@ -24,11 +24,16 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  const requestUrl = new URL(event.request.url);
+  const sameOrigin = requestUrl.origin === self.location.origin;
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        if (sameOrigin && event.request.method === "GET") {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
         return response;
       })
       .catch(() => caches.match(event.request))

@@ -1,7 +1,17 @@
 {
+  "name": "detectorcam-v5-fix-ia-camara",
+  "version": "5.3.0",
+  "description": "DetectorCam AI con carga robusta de MediaPipe, cámara estable, eventos y filtro balanceado contra falsos positivos.",
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --input-type=module --check < app.js && node --check server.js && node --check service-worker.js"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "keywords": [
+    "detectorcam",
+    "mediapipe",
+    "pwa",
+    "motion-detection"
+  ],
+  "license": "UNLICENSED"
 }
