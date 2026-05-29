@@ -1,4 +1,4 @@
-const CACHE_NAME = "detectorcam-v5-ai-skeleton";
+const CACHE_NAME = "detectorcam-v6-ai-save-delete";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,7 +25,7 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-store" })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
