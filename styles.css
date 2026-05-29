@@ -43,14 +43,6 @@ select {
   object-fit: cover;
 }
 
-#camera {
-  z-index: 0;
-}
-
-#overlay {
-  z-index: 1;
-}
-
 #camera.enhanced {
   filter: contrast(1.45) brightness(1.12) saturate(0.75);
 }
