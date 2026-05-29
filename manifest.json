@@ -1,7 +1,7 @@
 {
   "name": "DetectorCam",
   "short_name": "DetectorCam",
-  "description": "Camara instalable con grabacion y detector de movimiento.",
+  "description": "Cámara instalable con grabación y detector de movimiento.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

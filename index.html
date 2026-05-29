@@ -14,13 +14,13 @@
   </head>
   <body>
     <main class="app">
-      <section class="camera-shell" aria-label="Camara con inteligencia visual">
+      <section class="camera-shell" aria-label="Cámara con inteligencia visual">
         <video id="camera" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
         <div class="top-bar">
           <div>
             <p class="eyebrow">DetectorCam AI</p>
-            <h1>Vision en vivo</h1>
+            <h1>Visión en vivo</h1>
             <p id="motionStats" class="stats">IA cargando...</p>
           </div>
           <div id="status" class="status idle">Lista</div>
@@ -29,14 +29,14 @@
       </section>
 
       <section class="controls" aria-label="Controles">
-        <button id="startCamera" class="primary">Abrir camara</button>
+        <button id="startCamera" class="primary">Abrir cámara</button>
         <button id="record" disabled>Grabar</button>
-        <button id="switchCamera" disabled>Cambiar camara</button>
+        <button id="switchCamera" disabled>Cambiar cámara</button>
 
         <label class="field field-full">
-          <span>Elegir camara</span>
+          <span>Elegir cámara</span>
           <select id="cameraSelect" disabled>
-            <option value="">Camara automatica</option>
+            <option value="">Cámara automática</option>
           </select>
         </label>
 
@@ -92,9 +92,9 @@
       </section>
 
 
-      <section class="diagnostics" aria-label="Diagnostico">
+      <section class="diagnostics" aria-label="Diagnóstico">
         <div class="section-title">
-          <h2>Diagnostico</h2>
+          <h2>Diagnóstico</h2>
         </div>
         <div class="diagnostic-grid">
           <div class="diagnostic-item">
@@ -102,7 +102,7 @@
             <strong id="diagAi">Cargando</strong>
           </div>
           <div class="diagnostic-item">
-            <span>Camara</span>
+            <span>Cámara</span>
             <strong id="diagCamera">Inactiva</strong>
           </div>
           <div class="diagnostic-item">
@@ -126,7 +126,7 @@
           <button id="clearList" class="ghost">Limpiar</button>
         </div>
         <div id="recordingList" class="recording-list">
-          <p class="empty">Cuando termines una grabacion aparecera aqui.</p>
+          <p class="empty">Cuando termines una grabación aparecerá aquí.</p>
         </div>
       </section>
     </main>
