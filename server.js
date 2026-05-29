@@ -11,16 +11,12 @@ const types = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".svg": "image/svg+xml; charset=utf-8",
 };
 
 const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
-  const cleanPath = requestUrl.pathname === "/" ? "/index.html" : decodeURIComponent(requestUrl.pathname);
-  const filePath = path.resolve(root, `.${path.normalize(cleanPath)}`);
+  const cleanPath = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
+  const filePath = path.join(root, path.normalize(cleanPath));
 
   if (!filePath.startsWith(root)) {
     response.writeHead(403);
