@@ -19,6 +19,7 @@ const visualModeSelect = document.querySelector("#visualMode");
 const sensitivityInput = document.querySelector("#sensitivity");
 const detailInput = document.querySelector("#detail");
 const drawOverlayInput = document.querySelector("#drawOverlay");
+const motionGateInput = document.querySelector("#motionGate");
 const globalFilterInput = document.querySelector("#globalFilter");
 const enhanceViewInput = document.querySelector("#enhanceView");
 const clearListButton = document.querySelector("#clearList");
@@ -79,6 +80,7 @@ let poseLandmarker = null;
 let handLandmarker = null;
 let faceLandmarker = null;
 let lastAi = { poses: [], hands: [], faces: [] };
+let lastVisibleAi = { poses: [], hands: [], faces: [] };
 let lastMotion = { boxes: [], points: [], strength: 0, filtered: false };
 let trailPoints = [];
 
@@ -278,18 +280,50 @@ function drawScene() {
   const rect = overlay.getBoundingClientRect();
   overlayContext.clearRect(0, 0, rect.width, rect.height);
 
-  if (!drawOverlayInput.checked) return;
-
   const mode = aiModeSelect.value;
   const visual = visualModeSelect.value;
+  lastVisibleAi = getVisibleAiByMotion(lastAi);
+
+  if (!drawOverlayInput.checked) return;
 
   if (mode === "motion" || visual === "trail" || visual === "heat") {
     drawMotionOverlay(overlayContext, lastMotion, rect.width, rect.height, visual);
   }
 
   if (mode !== "motion" && visual !== "trail" && visual !== "heat") {
-    drawAiOverlay(overlayContext, lastAi, rect.width, rect.height, visual);
+    drawAiOverlay(overlayContext, lastVisibleAi, rect.width, rect.height, visual);
   }
+}
+
+function getVisibleAiByMotion(ai) {
+  if (!motionGateInput?.checked) return ai;
+
+  return {
+    poses: ai.poses.filter((pose) => landmarkGroupHasMotion(pose, "pose")),
+    hands: ai.hands.filter((hand) => landmarkGroupHasMotion(hand, "hand")),
+    faces: ai.faces.filter((face) => landmarkGroupHasMotion(face, "face")),
+  };
+}
+
+function landmarkGroupHasMotion(landmarks, type) {
+  if (!landmarks?.length || !lastMotion.points.length) return false;
+
+  const visible = landmarks.filter((landmark) => isVisible(landmark, type === "face" ? 0.12 : 0.2));
+  if (!visible.length) return false;
+
+  const minX = Math.max(0, Math.min(...visible.map((landmark) => landmark.x)) - 0.08);
+  const maxX = Math.min(1, Math.max(...visible.map((landmark) => landmark.x)) + 0.08);
+  const minY = Math.max(0, Math.min(...visible.map((landmark) => landmark.y)) - 0.08);
+  const maxY = Math.min(1, Math.max(...visible.map((landmark) => landmark.y)) + 0.08);
+  const nearby = lastMotion.points.filter((point) => {
+    const x = point.x / grid.width;
+    const y = point.y / grid.height;
+    return x >= minX && x <= maxX && y >= minY && y <= maxY;
+  });
+
+  const required = type === "face" ? 2 : type === "hand" ? 1 : 3;
+  const strength = nearby.reduce((total, point) => total + point.strength, 0);
+  return nearby.length >= required || strength >= required * 0.62;
 }
 
 function drawAiOverlay(context, ai, width, height, visual) {
@@ -377,21 +411,25 @@ function toCanvasPoint(landmark, transform) {
 }
 
 function updateStatus() {
-  const humanCount = lastAi.poses.length;
-  const handCount = lastAi.hands.length;
-  const faceCount = lastAi.faces.length;
+  const rawHumanCount = lastAi.poses.length;
+  const rawHandCount = lastAi.hands.length;
+  const rawFaceCount = lastAi.faces.length;
+  const humanCount = lastVisibleAi.poses.length;
+  const handCount = lastVisibleAi.hands.length;
+  const faceCount = lastVisibleAi.faces.length;
   const motionCount = lastMotion.points.length;
   const hasAi = humanCount + handCount + faceCount > 0;
   const hasMotion = motionCount > 0;
   const now = Date.now();
 
-  motionStats.textContent = `Cuerpos: ${humanCount} | Manos: ${handCount} | Caras: ${faceCount} | Puntos: ${motionCount}`;
+  const gateText = motionGateInput?.checked ? ` | IA mov: ${humanCount}/${rawHumanCount}, ${handCount}/${rawHandCount}, ${faceCount}/${rawFaceCount}` : "";
+  motionStats.textContent = `Cuerpos: ${humanCount} | Manos: ${handCount} | Caras: ${faceCount} | Puntos: ${motionCount}${gateText}`;
 
-  if (hasAi || hasMotion) {
+  if (hasAi || (aiModeSelect.value === "motion" && hasMotion)) {
     lastMotionAt = now;
-    motionBanner.textContent = hasAi ? "Esqueleto detectado" : "Cambio detectado";
+    motionBanner.textContent = hasAi ? "Movimiento con esqueleto" : "Cambio detectado";
     motionBanner.classList.add("visible");
-    setStatus(isRecording ? "Grabando" : hasAi ? "IA activa" : "Cambio", isRecording ? "recording" : "motion");
+    setStatus(isRecording ? "Grabando" : hasAi ? "IA en movimiento" : "Cambio", isRecording ? "recording" : "motion");
     return;
   }
 
@@ -596,7 +634,7 @@ function createRecordingStream() {
       if (aiModeSelect.value === "motion" || visualModeSelect.value === "trail" || visualModeSelect.value === "heat") {
         drawMotionOverlay(recordingContext, lastMotion, width, height, visualModeSelect.value);
       } else {
-        drawAiOverlay(recordingContext, lastAi, width, height, visualModeSelect.value);
+        drawAiOverlay(recordingContext, lastVisibleAi, width, height, visualModeSelect.value);
       }
     }
     recordingAnimationId = requestAnimationFrame(draw);
@@ -849,6 +887,10 @@ recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
 cameraSelect.addEventListener("change", startCamera);
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
+motionGateInput?.addEventListener("change", () => {
+  lastVisibleAi = getVisibleAiByMotion(lastAi);
+  updateStatus();
+});
 clearListButton.addEventListener("click", async () => {
   try {
     await clearStoredRecordings();
