@@ -1,10 +1,12 @@
-import {
-  FaceLandmarker,
-  FilesetResolver,
-  HandLandmarker,
-  ObjectDetector,
-  PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+const MEDIAPIPE_VERSION = "0.10.22";
+const MEDIAPIPE_BUNDLE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/vision_bundle.mjs`;
+const MEDIAPIPE_WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
+
+let FaceLandmarker = null;
+let FilesetResolver = null;
+let HandLandmarker = null;
+let ObjectDetector = null;
+let PoseLandmarker = null;
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -40,7 +42,7 @@ const recordingContext = recordingCanvas.getContext("2d");
 const MODEL_URLS = {
   pose: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
   hands: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+  face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
   object: "https://storage.googleapis.com/mediapipe-tasks/object_detector/efficientdet_lite0_uint8.tflite",
 };
 
@@ -165,38 +167,65 @@ initRecordings();
 updateDiagnostics();
 
 async function initAi() {
+  const loaded = [];
+  const failed = [];
+
   try {
     setStatus("Cargando IA", "idle");
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-    );
+    motionStats.textContent = "Cargando IA. La camara puede abrir aunque la IA falle.";
 
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numPoses: 2,
-      minPoseDetectionConfidence: 0.35,
-      minPosePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    const mediapipe = await import(MEDIAPIPE_BUNDLE_URL);
+    ({ FaceLandmarker, FilesetResolver, HandLandmarker, ObjectDetector, PoseLandmarker } = mediapipe);
 
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.35,
-      minHandPresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    });
+    const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
 
-    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numFaces: 1,
-      minFaceDetectionConfidence: 0.4,
-      minFacePresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
-    });
+    try {
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URLS.pose, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numPoses: 2,
+        minPoseDetectionConfidence: 0.35,
+        minPosePresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
+      });
+      loaded.push("cuerpo");
+    } catch (error) {
+      console.warn("Pose no disponible", error);
+      poseLandmarker = null;
+      failed.push("cuerpo");
+    }
+
+    try {
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URLS.hands, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.35,
+        minHandPresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
+      });
+      loaded.push("manos");
+    } catch (error) {
+      console.warn("Manos no disponible", error);
+      handLandmarker = null;
+      failed.push("manos");
+    }
+
+    try {
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URLS.face, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        minFaceDetectionConfidence: 0.4,
+        minFacePresenceConfidence: 0.4,
+        minTrackingConfidence: 0.4,
+      });
+      loaded.push("cara");
+    } catch (error) {
+      console.warn("Cara no disponible", error);
+      faceLandmarker = null;
+      failed.push("cara");
+    }
 
     try {
       objectDetector = await ObjectDetector.createFromOptions(vision, {
@@ -205,21 +234,34 @@ async function initAi() {
         maxResults: 8,
         scoreThreshold: 0.42,
       });
+      loaded.push("objetos");
     } catch (error) {
       console.warn("Detector de objetos no disponible", error);
       objectDetector = null;
+      failed.push("objetos");
     }
 
-    visionReady = true;
-    setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la camara";
+    visionReady = loaded.length > 0;
+
+    if (visionReady && failed.length) {
+      setStatus("IA parcial", "idle");
+      motionStats.textContent = `IA parcial: ${loaded.join(", ")} | fallaron: ${failed.join(", ")}`;
+    } else if (visionReady) {
+      setStatus("IA lista", "idle");
+      motionStats.textContent = "IA lista | abre la camara";
+    } else {
+      setStatus("IA no cargo", "idle");
+      motionStats.textContent = "IA no cargo. La camara puede funcionar sin esqueleto.";
+    }
   } catch (error) {
-    console.error(error);
+    console.error("No se pudo cargar MediaPipe", error);
+    visionReady = false;
     setStatus("IA no cargo", "idle");
-    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
+    motionStats.textContent = "IA no cargo. La camara puede funcionar sin esqueleto. Revisa internet o CDN.";
+  } finally {
+    updateDiagnostics();
   }
 }
-
 async function startCamera() {
   stopCamera();
 
@@ -229,11 +271,11 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
-    resizeOverlay();
+    resizeOverlayIfNeeded();
     previousFrame = null;
     backgroundBrightness = null;
     trailPoints = [];
@@ -311,17 +353,17 @@ function runAiDetection(now) {
   const faces = [];
 
   try {
-    if (mode === "holistic" || mode === "poseHands" || mode === "pose") {
+    if (poseLandmarker && (mode === "holistic" || mode === "poseHands" || mode === "pose")) {
       const poseResult = poseLandmarker.detectForVideo(video, now);
       poses.push(...(poseResult.landmarks || []));
     }
 
-    if (mode === "holistic" || mode === "poseHands") {
+    if (handLandmarker && (mode === "holistic" || mode === "poseHands")) {
       const handResult = handLandmarker.detectForVideo(video, now);
       hands.push(...(handResult.landmarks || []));
     }
 
-    if (mode === "holistic") {
+    if (faceLandmarker && mode === "holistic") {
       const faceResult = faceLandmarker.detectForVideo(video, now);
       faces.push(...(faceResult.faceLandmarks || []));
     }
@@ -354,7 +396,7 @@ function updateMotionDetection() {
 }
 
 function drawScene() {
-  resizeOverlay();
+  resizeOverlayIfNeeded();
   const rect = overlay.getBoundingClientRect();
   overlayContext.clearRect(0, 0, rect.width, rect.height);
 
@@ -987,14 +1029,19 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function resizeOverlay() {
+function resizeOverlayIfNeeded() {
   const rect = video.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
-  overlay.width = Math.round(rect.width * pixelRatio);
-  overlay.height = Math.round(rect.height * pixelRatio);
+  const nextWidth = Math.max(1, Math.round(rect.width * pixelRatio));
+  const nextHeight = Math.max(1, Math.round(rect.height * pixelRatio));
+
+  if (overlay.width !== nextWidth || overlay.height !== nextHeight) {
+    overlay.width = nextWidth;
+    overlay.height = nextHeight;
+  }
+
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
-
 function toggleRecording() {
   if (!stream) return;
   if (isRecording) {
@@ -1317,7 +1364,7 @@ clearListButton.addEventListener("click", async () => {
   recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
   updateDiagnostics();
 });
-window.addEventListener("resize", resizeOverlay);
+window.addEventListener("resize", resizeOverlayIfNeeded);
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./service-worker.js").catch(console.error);
