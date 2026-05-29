@@ -3,7 +3,7 @@ import {
   FilesetResolver,
   HandLandmarker,
   PoseLandmarker,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs";
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
@@ -65,6 +65,7 @@ const FACE_CONNECTIONS = [
 
 let stream = null;
 let recordingStream = null;
+let recordingAudioStream = null;
 let mediaRecorder = null;
 let recordedChunks = [];
 let previousFrame = null;
@@ -115,7 +116,7 @@ async function initAi() {
   try {
     setStatus("Cargando IA", "idle");
     const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
     );
 
     poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -147,15 +148,20 @@ async function initAi() {
 
     visionReady = true;
     setStatus("IA lista", "idle");
-    motionStats.textContent = "IA lista | abre la camara";
+    motionStats.textContent = "IA lista | abre la cámara";
   } catch (error) {
     console.error(error);
-    setStatus("IA no cargo", "idle");
-    motionStats.textContent = "IA no cargo. Revisa internet y recarga.";
+    setStatus("IA no cargó", "idle");
+    motionStats.textContent = "IA no cargó. Revisa internet y recarga.";
   }
 }
 
 async function startCamera() {
+  if (isRecording) {
+    setStatus("Detén la grabación antes de reiniciar", "recording");
+    return;
+  }
+
   stopCamera();
 
   try {
@@ -164,7 +170,7 @@ async function startCamera() {
       ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
       : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } };
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     video.srcObject = stream;
     await video.play();
     await refreshCameraList();
@@ -177,12 +183,12 @@ async function startCamera() {
     recordButton.disabled = false;
     switchCameraButton.disabled = false;
     cameraSelect.disabled = false;
-    setStatus(visionReady ? "Camara activa" : "Sin IA", "idle");
+    setStatus(visionReady ? "Cámara activa" : "Sin IA", "idle");
     detectLoop();
   } catch (error) {
     console.error(error);
     setStatus("Sin permiso", "idle");
-    alert("No se pudo abrir la camara. Revisa permisos del navegador.");
+    alert("No se pudo abrir la cámara. Revisa permisos del navegador.");
   }
 }
 
@@ -205,11 +211,11 @@ async function refreshCameraList() {
   const activeTrack = stream?.getVideoTracks()[0];
   const activeDeviceId = activeTrack?.getSettings().deviceId || cameraSelect.value;
 
-  cameraSelect.innerHTML = '<option value="">Camara automatica</option>';
+  cameraSelect.innerHTML = '<option value="">Cámara automática</option>';
   cameras.forEach((camera, index) => {
     const option = document.createElement("option");
     option.value = camera.deviceId;
-    option.textContent = camera.label || `Camara ${index + 1}`;
+    option.textContent = camera.label || `Cámara ${index + 1}`;
     option.selected = camera.deviceId === activeDeviceId;
     cameraSelect.append(option);
   });
@@ -543,7 +549,7 @@ function updateStatus() {
 
   if (now - lastMotionAt > 700) {
     motionBanner.classList.remove("visible");
-    setStatus(isRecording ? "Grabando" : "Camara activa", isRecording ? "recording" : "idle");
+    setStatus(isRecording ? "Grabando" : "Cámara activa", isRecording ? "recording" : "idle");
   }
 }
 
@@ -706,29 +712,45 @@ function resizeOverlay() {
   overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 }
 
-function toggleRecording() {
+async function toggleRecording() {
   if (!stream) return;
+
   if (isRecording) {
-    mediaRecorder.stop();
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
     return;
   }
 
-  recordedChunks = [];
-  recordingStream = createRecordingStream();
-  const mimeType = getSupportedMimeType();
-  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) recordedChunks.push(event.data);
-  };
-  mediaRecorder.onstop = saveRecording;
-  mediaRecorder.start();
-  isRecording = true;
-  recordButton.textContent = "Detener";
-  recordButton.classList.add("primary");
-  setStatus("Grabando", "recording");
+  if (typeof MediaRecorder === "undefined") {
+    alert("Este navegador no soporta grabación con MediaRecorder.");
+    return;
+  }
+
+  try {
+    recordedChunks = [];
+    recordingStream = await createRecordingStream();
+    const mimeType = getSupportedMimeType();
+    mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordedChunks.push(event.data);
+    };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start();
+    isRecording = true;
+    recordButton.textContent = "Detener";
+    recordButton.classList.add("primary");
+    startCameraButton.disabled = true;
+    switchCameraButton.disabled = true;
+    cameraSelect.disabled = true;
+    setStatus("Grabando", "recording");
+  } catch (error) {
+    console.error(error);
+    cleanupRecordingTracks();
+    setStatus("Error al grabar", "idle");
+    alert("No se pudo iniciar la grabación en este navegador.");
+  }
 }
 
-function createRecordingStream() {
+async function createRecordingStream() {
   const width = video.videoWidth || 1280;
   const height = video.videoHeight || 720;
   recordingCanvas.width = width;
@@ -751,8 +773,24 @@ function createRecordingStream() {
 
   draw();
   const canvasStream = recordingCanvas.captureStream(30);
-  stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+
+  try {
+    recordingAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    recordingAudioStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+  } catch (error) {
+    console.info("Grabacion sin audio:", error);
+  }
+
   return canvasStream;
+}
+
+function cleanupRecordingTracks() {
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  recordingAnimationId = null;
+  if (recordingStream) recordingStream.getTracks().forEach((track) => track.stop());
+  if (recordingAudioStream) recordingAudioStream.getTracks().forEach((track) => track.stop());
+  recordingStream = null;
+  recordingAudioStream = null;
 }
 
 function getSupportedMimeType() {
@@ -767,14 +805,19 @@ function getSupportedMimeType() {
 }
 
 async function saveRecording() {
-  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
-  recordingAnimationId = null;
-  if (recordingStream) recordingStream.getVideoTracks().forEach((track) => track.stop());
-  recordingStream = null;
+  cleanupRecordingTracks();
   isRecording = false;
   recordButton.textContent = "Grabar";
   recordButton.classList.remove("primary");
-  setStatus("Camara activa", "idle");
+  startCameraButton.disabled = false;
+  switchCameraButton.disabled = !stream;
+  cameraSelect.disabled = !stream;
+  setStatus(stream ? "Cámara activa" : "Cámara inactiva", "idle");
+
+  if (!recordedChunks.length) {
+    updateDiagnostics();
+    return;
+  }
 
   const mimeType = recordedChunks[0]?.type || getSupportedMimeType() || "video/webm";
   const extension = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -888,7 +931,7 @@ async function renderStoredRecordings() {
 
   recordingList.innerHTML = "";
   if (!records.length) {
-    recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+    recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
     updateDiagnostics();
     return;
   }
@@ -951,7 +994,7 @@ function renderEphemeralRecording(recording) {
     activeRecordingUrls.delete(url);
     item.remove();
     if (!recordingList.querySelector(".recording-item")) {
-      recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+      recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
     }
   });
   recordingList.querySelector(".empty")?.remove();
@@ -966,7 +1009,7 @@ function formatBytes(bytes) {
 
 function updateDiagnostics() {
   if (diagAi) diagAi.textContent = visionReady ? "IA cargada" : "IA cargando/error";
-  if (diagCamera) diagCamera.textContent = stream ? "Camara activa" : "Camara inactiva";
+  if (diagCamera) diagCamera.textContent = stream ? "Cámara activa" : "Cámara inactiva";
   if (diagRecorder) {
     diagRecorder.textContent = typeof MediaRecorder === "undefined"
       ? "No soportado"
@@ -986,6 +1029,10 @@ function setStatus(text, mode) {
 }
 
 async function switchCamera() {
+  if (isRecording) {
+    setStatus("Detén la grabación antes de cambiar cámara", "recording");
+    return;
+  }
   cameraSelect.value = "";
   facingMode = facingMode === "environment" ? "user" : "environment";
   await startCamera();
@@ -994,7 +1041,13 @@ async function switchCamera() {
 startCameraButton.addEventListener("click", startCamera);
 recordButton.addEventListener("click", toggleRecording);
 switchCameraButton.addEventListener("click", switchCamera);
-cameraSelect.addEventListener("change", startCamera);
+cameraSelect.addEventListener("change", () => {
+  if (isRecording) {
+    setStatus("Detén la grabación antes de cambiar cámara", "recording");
+    return;
+  }
+  startCamera();
+});
 enhanceViewInput.addEventListener("change", () => video.classList.toggle("enhanced", enhanceViewInput.checked));
 motionGateInput?.addEventListener("change", () => {
   classifyAiForMotion();
@@ -1009,7 +1062,7 @@ clearListButton.addEventListener("click", async () => {
   revokeActiveRecordingUrls();
   storedRecordingCount = 0;
   storedRecordingBytes = 0;
-  recordingList.innerHTML = '<p class="empty">Cuando termines una grabacion aparecera aqui.</p>';
+  recordingList.innerHTML = '<p class="empty">Cuando termines una grabación aparecerá aqui.</p>';
   updateDiagnostics();
 });
 window.addEventListener("resize", resizeOverlay);

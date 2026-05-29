@@ -1,0 +1,13 @@
+{
+  "name": "detectorcam",
+  "version": "5.0.1",
+  "description": "DetectorCam PWA con detección visual, movimiento fino, grabación e historial local.",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check server.js && node --check service-worker.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
